@@ -13,7 +13,7 @@ use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tungstenite::protocol::Message;
 
-use serialport::{DataBits, StopBits};
+use serialport;
 
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
@@ -33,10 +33,10 @@ async fn handle_connection(peer_map: PeerMap, raw_stream: TcpStream, addr: Socke
     let (outgoing, incoming) = ws_stream.split();
 
     // open the serial port
-    let port = serialport::new("/dev/ttyUSB0", 115_200)
-    .timeout(Duration::from_millis(10))
-    .open()
-    .expect("Failed to open port");
+    let mut port = serialport::new("/dev/pts/14", 115_200)
+        .timeout(Duration::from_millis(10))
+        .open()
+        .expect("Failed to open port");
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
         println!(
@@ -44,10 +44,8 @@ async fn handle_connection(peer_map: PeerMap, raw_stream: TcpStream, addr: Socke
             addr,
             msg.to_text().unwrap()
         );
-        let peers = peer_map.lock().unwrap();
 
-        
-        port.write(msg.clone()).expect("Write failed!");
+        port.write(&[*msg.into_data().first().unwrap()]).expect("Write failed!");
         future::ok(())
     });
 
@@ -68,17 +66,9 @@ async fn main() -> Result<(), IoError> {
 
     let state = PeerMap::new(Mutex::new(HashMap::new()));
 
-    let builder = serialport::new(port_name, baud_rate)
-        .stop_bits(stop_bits)
-        .data_bits(data_bits);
-    println!("{:?}", &builder);
-    let mut port = builder.open().unwrap_or_else(|e| {
-        eprintln!("Failed to open \"{}\". Error: {}", port_name, e);
-        ::std::process::exit(1);
-    });
-
     // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind(&addr).await.expect("Failed to bind");
+    let try_socket = TcpListener::bind(&addr).await;
+    let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", addr);
 
     // Let's spawn the handling of each connection in a separate task.
