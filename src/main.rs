@@ -47,10 +47,12 @@ async fn handle_connection(peer_map: PeerMap, raw_stream: TcpStream, addr: Socke
         port.write(&data).expect("Write failed!");
         let mut response: Vec<u8> = vec![0; 1000];
         match port.read(response.as_mut_slice()) {
-            Ok(t) => tx.unbounded_send(Message::binary(&response[..t])).unwrap(),
+            Ok(t) => {
+                println!("size: {}", t);
+                tx.unbounded_send(Message::binary(&response[..t])).unwrap();
+            }
             Err(e) => eprintln!("{:?}", e),
         }
-
         future::ok(())
     });
 

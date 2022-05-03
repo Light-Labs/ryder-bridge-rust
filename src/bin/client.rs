@@ -33,19 +33,11 @@ async fn main() {
 
     let (write, read) = ws_stream.split();
 
-    let stdin_to_ws = stdin_rx
-        .map(|m| {
-            let txt = m.to_text().unwrap();
-            if txt == "1" {
-                Ok(Message::binary([1]))
-            } else {
-                Ok(Message::binary([2]))
-            }
-        })
-        .forward(write);
+    let stdin_to_ws = stdin_rx.map(|_m| Ok(Message::binary([2]))).forward(write);
     let ws_to_stdout = {
         read.for_each(|message| async {
             let data = message.unwrap().into_data();
+            println!("{:?}", data);
             tokio::io::stdout().write_all(&data).await.unwrap();
         })
     };
