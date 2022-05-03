@@ -28,12 +28,10 @@ async fn handle_connection(peer_map: PeerMap, raw_stream: TcpStream, addr: Socke
 
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(addr, tx);
-
     let (outgoing, incoming) = ws_stream.split();
 
     // open the serial port
-    let mut port = serialport::new("/dev/pts/14", 115_200)
+    let mut port = serialport::new("/dev/pts/7", 115_200)
         .timeout(Duration::from_millis(10))
         .open()
         .expect("Failed to open port");
@@ -44,8 +42,15 @@ async fn handle_connection(peer_map: PeerMap, raw_stream: TcpStream, addr: Socke
             addr,
             msg.to_text().unwrap()
         );
+        let data = msg.into_data();
+        println!("{:?}", data);
+        port.write(&data).expect("Write failed!");
+        let mut response: Vec<u8> = vec![0; 1000];
+        match port.read(response.as_mut_slice()) {
+            Ok(t) => tx.unbounded_send(Message::binary(&response[..t])).unwrap(),
+            Err(e) => eprintln!("{:?}", e),
+        }
 
-        port.write(&[*msg.into_data().first().unwrap()]).expect("Write failed!");
         future::ok(())
     });
 

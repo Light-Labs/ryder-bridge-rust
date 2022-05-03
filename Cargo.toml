@@ -12,3 +12,4 @@ tokio = { version = "1.18.0",  features = ["full"] }
 tungstenite = "*"
 tokio-tungstenite = "0.17.1"
 serialport = "4.1.0"
+url = "2.2.2"
