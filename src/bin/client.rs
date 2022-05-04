@@ -38,7 +38,6 @@ async fn main() {
         read.for_each(|message| async {
             let data = message.unwrap().into_data();
             println!("{:?}", data);
-            tokio::io::stdout().write_all(&data).await.unwrap();
         })
     };
 

@@ -40,7 +40,10 @@ async fn handle_connection(device_owner: DeviceOwner, raw_stream: TcpStream, add
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let previous_owner = *device_owner.lock().unwrap();
         if previous_owner.is_none() || previous_owner.unwrap() == addr {
-            *device_owner.lock().unwrap() = Some(addr);
+            // take ownership
+            if previous_owner.is_none() {
+                *device_owner.lock().unwrap() = Some(addr);
+            }
 
             let data = msg.into_data();
             println!("Received a message from {}: {:?}", addr, data);
