@@ -1,6 +1,7 @@
 use std::{
     env,
     io::Error as IoError,
+    io::ErrorKind,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -31,30 +32,40 @@ async fn handle_connection(device_owner: DeviceOwner, raw_stream: TcpStream, add
     let (tx, rx) = unbounded();
     let (outgoing, incoming) = ws_stream.split();
 
-    // open the serial port
-    let mut port = serialport::new("/dev/pts/7", 115_200)
+    let mut port = serialport::new("/dev/pts/3", 115_200)
         .timeout(Duration::from_millis(10))
         .open()
         .expect("Failed to open port");
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let previous_owner = *device_owner.lock().unwrap();
-        if previous_owner.is_none() || previous_owner.unwrap() == addr {
+        println!(
+            "previous owner {:?}, addr {:?}, = {:?}",
+            previous_owner.unwrap(),
+            addr,
+            previous_owner.unwrap() == addr
+        );
+        if true || previous_owner.is_none() || previous_owner.unwrap() == addr {
             // take ownership
             if previous_owner.is_none() {
                 *device_owner.lock().unwrap() = Some(addr);
             }
-
             let data = msg.into_data();
             println!("Received a message from {}: {:?}", addr, data);
-            port.write(&data).expect("Write failed!");
+            if data.len() > 0 {
+                port.write(&data).expect("Write failed!");
+            }
             let mut response: Vec<u8> = vec![0; 1000];
-            match port.read(response.as_mut_slice()) {
-                Ok(t) => {
-                    println!("read {} bytes", t);
-                    tx.unbounded_send(Message::binary(&response[..t])).unwrap();
+            loop {
+                println!("bytes to read: {:?}", port.bytes_to_read());
+                match port.read(response.as_mut_slice()) {
+                    Ok(t) => {
+                        println!("read {} bytes", t);
+                        tx.unbounded_send(Message::binary(&response[..t])).unwrap();
+                    }
+                    Err(ref e) if e.kind() == ErrorKind::TimedOut => break,
+                    Err(e) => eprintln!("{:?}", e),
                 }
-                Err(e) => eprintln!("{:?}", e),
             }
             future::ok(())
         } else {
