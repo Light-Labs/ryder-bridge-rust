@@ -16,7 +16,12 @@ use serialport;
 
 type DeviceOwner = Arc<Mutex<Option<SocketAddr>>>;
 
-async fn handle_connection(device_owner: DeviceOwner, raw_stream: TcpStream, addr: SocketAddr) {
+async fn handle_connection(
+    device_owner: DeviceOwner,
+    raw_stream: TcpStream,
+    addr: SocketAddr,
+    ryder_port: String,
+) {
     let previous_owner = *device_owner.lock().unwrap();
     if previous_owner.is_none() {
         *device_owner.lock().unwrap() = Some(addr);
@@ -32,7 +37,7 @@ async fn handle_connection(device_owner: DeviceOwner, raw_stream: TcpStream, add
     let (outgoing, incoming) = ws_stream.split();
 
     // open the serial port
-    let mut port = serialport::new("/dev/pts/7", 115_200)
+    let mut port = serialport::new(ryder_port, 115_200)
         .timeout(Duration::from_millis(10))
         .open()
         .expect("Failed to open port");
@@ -58,6 +63,7 @@ async fn handle_connection(device_owner: DeviceOwner, raw_stream: TcpStream, add
             }
             future::ok(())
         } else {
+            //FIXME- "send (to be defined) busy byte instead of ASCII"
             tx.unbounded_send(Message::text("Ryder in use")).unwrap();
             future::ok(())
         }
@@ -74,20 +80,28 @@ async fn handle_connection(device_owner: DeviceOwner, raw_stream: TcpStream, add
 
 #[tokio::main]
 async fn main() -> Result<(), IoError> {
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let mut args = env::args();
+
+    let ryder_port = args.nth(1).expect("Ryder port is required");
+    let addr = args.nth(0).expect("Listening address is required");
 
     let state = DeviceOwner::new(Mutex::new(None));
+
+    println!("Listening on: {}", addr);
+    println!("Ryder port: {}", ryder_port);
 
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
-    println!("Listening on: {}", addr);
+
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
-        tokio::spawn(handle_connection(state.clone(), stream, addr));
+        tokio::spawn(handle_connection(
+            state.clone(),
+            stream,
+            addr,
+            ryder_port.clone(),
+        ));
     }
-
     Ok(())
 }
