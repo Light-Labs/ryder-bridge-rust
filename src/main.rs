@@ -41,7 +41,7 @@ async fn handle_connection(
 
     // open the serial port
     let mut port = serialport::new(ryder_port, 115_200)
-        .timeout(Duration::from_millis(10))
+        .timeout(Duration::from_millis(100))
         .open()
         .expect("Failed to open port");
 
