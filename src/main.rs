@@ -17,6 +17,8 @@ use serialport;
 
 type DeviceOwner = Arc<Mutex<Option<SocketAddr>>>;
 
+const RESPONSE_WAIT_USER_CONFIRM: u8 = 10;
+
 async fn handle_connection(
     device_owner: DeviceOwner,
     raw_stream: TcpStream,
@@ -57,19 +59,53 @@ async fn handle_connection(
                 *device_owner.lock().unwrap() = Some(addr);
             }
             let data = msg.into_data();
-            println!("Received a message from {}: {:?}", addr, data);
+            println!(
+                "Forwarding a message from {} to ryder device: {:?}",
+                addr, data
+            );
             if data.len() > 0 {
                 port.write(&data).expect("Write failed!");
             }
             let mut response: Vec<u8> = vec![0; 1000];
+            let mut wait_for_response: Option<bool> = None;
             loop {
-                println!("bytes to read: {:?}", port.bytes_to_read());
+                let bytes_to_read_result = port.bytes_to_read();
+                println!("bytes to read: {:?}", bytes_to_read_result);
                 match port.read(response.as_mut_slice()) {
                     Ok(t) => {
-                        println!("read {} bytes", t);
-                        tx.unbounded_send(Message::binary(&response[..t])).unwrap();
+                        let mut send_to_client = true;
+                        if wait_for_response.is_none() {
+                            if response[0] == RESPONSE_WAIT_USER_CONFIRM {
+                                println!("waiting for user (size: {})", t);
+                                wait_for_response = Some(true);
+                                send_to_client = false;
+                            } else {
+                                wait_for_response = Some(false);
+                            }
+                        } else {
+                            match wait_for_response {
+                                None | Some(true) => {
+                                    println!("user confirmed (size: {})", t);
+                                    wait_for_response = None;
+                                    send_to_client = true;
+                                }
+                                Some(false) => {}
+                            }
+                        }
+                        if send_to_client {
+                            println!("read {} bytes", t);
+                            tx.unbounded_send(Message::binary(&response[..t])).unwrap();
+                        }
                     }
-                    Err(ref e) if e.kind() == ErrorKind::TimedOut => break,
+                    Err(ref e) if e.kind() == ErrorKind::TimedOut => match wait_for_response {
+                        None | Some(false) => {
+                            println!("timeout, end of command");
+                            break;
+                        }
+                        Some(true) => {
+                            println!("timeout while waiting for user confirmation");
+                        }
+                    },
                     Err(e) => eprintln!("{:?}", e),
                 }
             }
