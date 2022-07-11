@@ -41,18 +41,13 @@ async fn handle_connection(
 
     // open the serial port
     let mut port = serialport::new(ryder_port, 115_200)
-        .timeout(Duration::from_millis(100))
+        .timeout(Duration::from_millis(5000))
         .open()
         .expect("Failed to open port");
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let previous_owner = *device_owner.lock().unwrap();
-        println!(
-            "previous owner {:?}, addr {:?}, = {:?}",
-            previous_owner.unwrap(),
-            addr,
-            previous_owner.unwrap() == addr
-        );
+        println!("previous owner {:?}, addr {:?}", previous_owner, addr);
         if true || previous_owner.is_none() || previous_owner.unwrap() == addr {
             // take ownership
             if previous_owner.is_none() {
