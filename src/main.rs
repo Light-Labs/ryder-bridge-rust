@@ -41,7 +41,7 @@ async fn handle_connection(
 
     // open the serial port
     let mut port = serialport::new(ryder_port, 115_200)
-        .timeout(Duration::from_millis(5000))
+        .timeout(Duration::from_millis(100))
         .open()
         .expect("Failed to open port");
 
@@ -94,7 +94,7 @@ async fn handle_connection(
                     }
                     Err(ref e) if e.kind() == ErrorKind::TimedOut => match wait_for_response {
                         None | Some(false) => {
-                            println!("timeout, end of command");
+                            println!("timeout, end of command, {:?}", wait_for_response);
                             break;
                         }
                         Some(true) => {
