@@ -38,7 +38,7 @@ async fn handle_connection(
     let (outgoing, incoming) = ws_stream.split();
 
     // open the serial port
-    let mut port = serialport::new(ryder_port, 115_200)
+    let mut port = serialport::new(ryder_port, 0) //115_200
         .timeout(Duration::from_millis(10))
         .open()
         .expect("Failed to open port");
