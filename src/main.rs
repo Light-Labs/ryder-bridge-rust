@@ -40,10 +40,17 @@ async fn handle_connection(
     let (outgoing, incoming) = ws_stream.split();
 
     // open the serial port
-    let mut port = serialport::new(ryder_port, 115_200)
+    let mut port = match serialport::new(ryder_port, 115_200)
         .timeout(Duration::from_millis(100))
         .open()
-        .expect("Failed to open port");
+    {
+        Ok(p) => p,
+        Err(error) => {
+            tx.unbounded_send(Message::Text(error.clone().description))
+                .expect("failed to forward error");
+            panic!("{}", error);
+        }
+    };
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let previous_owner = *device_owner.lock().unwrap();
@@ -88,7 +95,7 @@ async fn handle_connection(
                             }
                         }
                         if send_to_client {
-                            println!("read {} bytes", t);
+                            println!("read {} bytes {:?}", t, &response[..t]);
                             tx.unbounded_send(Message::binary(&response[..t])).unwrap();
                         }
                     }
