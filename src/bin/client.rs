@@ -33,11 +33,25 @@ async fn main() {
 
     let (write, read) = ws_stream.split();
 
-    let stdin_to_ws = stdin_rx.map(|_m| Ok(Message::binary([2]))).forward(write);
+    let stdin_to_ws = stdin_rx.map(|m| {
+        if let Ok(s) = String::from_utf8(m.into_data()) {
+            let data = s
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(2)
+                .map(|c| u8::from_str_radix(&c.iter().cloned().collect::<String>(), 16))
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+
+            Ok(Message::binary(data))
+        } else {
+            Ok(Message::binary([]))
+        }
+    }).forward(write);
     let ws_to_stdout = {
         read.for_each(|message| async {
             let data = message.unwrap().into_data();
-            println!("{:?}", data);
+            println!("response: {:?}", data);
         })
     };
 
@@ -56,7 +70,6 @@ async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Message>) {
             Ok(n) => n,
         };
         buf.truncate(n - 1);
-        println!("{:?}", buf);
         tx.unbounded_send(Message::binary(buf)).unwrap();
     }
 }
