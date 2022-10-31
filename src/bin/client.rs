@@ -10,11 +10,16 @@
 //!
 //! You can use this example together with the `server` example.
 
-use std::env;
+use std::{env, process};
 
-use futures_util::{future, pin_mut, StreamExt};
+use futures::{FutureExt, SinkExt, select};
+use futures_util::{pin_mut, StreamExt};
 use tokio::io::{AsyncReadExt};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::protocol::Message,
+};
+use futures_channel::{mpsc, oneshot};
 use url::Url;
 
 #[tokio::main]
@@ -25,13 +30,19 @@ async fn main() {
 
     let url = Url::parse(&connect_addr).unwrap();
 
-    let (stdin_tx, stdin_rx) = futures_channel::mpsc::unbounded();
+    let (stdin_tx, stdin_rx) = mpsc::unbounded();
     tokio::spawn(read_stdin(stdin_tx));
 
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     println!("WebSocket handshake has been successfully completed");
 
-    let (write, read) = ws_stream.split();
+    let (ctrlc_tx, mut ctrlc_rx) = oneshot::channel();
+    let mut ctrlc_tx = Some(ctrlc_tx);
+    ctrlc::set_handler(move || {
+        ctrlc_tx.take().map(|c| c.send(()));
+    }).expect("Failed to set ctrl-c handler");
+
+    let (mut write, read) = ws_stream.split();
 
     let stdin_to_ws = stdin_rx.map(|m| {
         if let Ok(s) = String::from_utf8(m.into_data()) {
@@ -47,16 +58,27 @@ async fn main() {
         } else {
             Ok(Message::binary([]))
         }
-    }).forward(write);
+    }).forward(&mut write);
     let ws_to_stdout = {
         read.for_each(|message| async {
             let data = message.unwrap().into_data();
             println!("response: {:?}", data);
-        })
+        }).fuse()
     };
 
+    let mut exit_code = 0;
+
     pin_mut!(stdin_to_ws, ws_to_stdout);
-    future::select(stdin_to_ws, ws_to_stdout).await;
+    select!(
+        _ = stdin_to_ws => {},
+        _ = ws_to_stdout => {},
+        _ = ctrlc_rx => exit_code = 1,
+
+    );
+
+    write.close().await.expect("Failed to close websocket");
+    println!("disconnected");
+    process::exit(exit_code);
 }
 
 // Our helper method which will read data from stdin and send it along the
