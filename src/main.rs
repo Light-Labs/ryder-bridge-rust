@@ -53,8 +53,14 @@ async fn handle_connection(
     let mut port = match port {
         Ok(p) => p,
         Err(e) => {
-            // tx_ws.unbounded_send(Message::Binary(vec![RESPONSE_DEVICE_BUSY])).unwrap();
-            println!("Error opening serial port: {}", e);
+            // Notify and disconnect the client
+            if outgoing.send(Message::Binary(vec![RESPONSE_DEVICE_BUSY])).await.is_ok() {
+                if let Err(e) = outgoing.close().await {
+                    eprintln!("Failed to close WebSocket: {}", e);
+                }
+            }
+
+            eprintln!("Error opening serial port: {}, {:?}", e, e.kind());
             return;
         }
     };
@@ -75,15 +81,6 @@ async fn handle_connection(
             println!("Received a message from {}: {:?}", addr, data);
             if data.len() > 0 {
                 tx_serial.unbounded_send(data).unwrap();
-                // if let Err(e) = port.write(&data) {
-                //     if let ErrorKind::BrokenPipe = e.kind() {
-                //         // Let the client know that the connection was closed
-                //         tx.unbounded_send(Message::Binary(vec![RESPONSE_DEVICE_DISCONNECTED])).unwrap();
-                //         return future::err(tungstenite::Error::Io(e));
-                //     } else {
-                //         eprintln!("error: {}", e);
-                //     }
-                // }
             }
             Ok(())
         }
@@ -108,7 +105,14 @@ async fn handle_connection(
                 Ok(bytes) => tx_ws.unbounded_send(Message::Binary(buf[..bytes].to_vec())).unwrap(),
                 Err(e) => match e.kind() {
                     io::ErrorKind::WouldBlock => continue,
-                    _ => return Err(e.into()),
+                    _ => {
+                        tx_ws.unbounded_send(
+                            Message::Binary(vec![RESPONSE_DEVICE_DISCONNECTED])
+                        ).unwrap();
+                        // Close the WebSocket TX (happens automatically but this makes it clear)
+                        drop(tx_ws);
+                        return Err(e.into());
+                    }
                 }
             }
         }
@@ -117,13 +121,16 @@ async fn handle_connection(
     let receive_from_others = rx_ws.map(Ok).forward(&mut outgoing);
 
     pin_mut!(broadcast_incoming, receive_from_others);
+    // Wait for the client or the serial IO thread to end the connection
     future::select(broadcast_incoming, receive_from_others).await;
 
     if let Ok(Err(e)) = serial_io.join() {
         eprintln!("Error in serial port I/O: {}, {:?}", e, e.kind());
     }
 
-    outgoing.close().await.unwrap();
+    if let Err(e) = outgoing.close().await {
+        eprintln!("Failed to close WebSocket: {}", e);
+    }
 
     println!("{} disconnected", &addr);
 }
