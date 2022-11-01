@@ -66,19 +66,17 @@ async fn main() {
         }).fuse()
     };
 
-    let mut exit_code = 0;
-
     pin_mut!(stdin_to_ws, ws_to_stdout);
     select!(
         _ = stdin_to_ws => {},
         _ = ws_to_stdout => {},
-        _ = ctrlc_rx => exit_code = 1,
+        _ = ctrlc_rx => {},
 
     );
 
     write.close().await.expect("Failed to close websocket");
     println!("disconnected");
-    process::exit(exit_code);
+    process::exit(0);
 }
 
 // Our helper method which will read data from stdin and send it along the
