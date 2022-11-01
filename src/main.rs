@@ -3,6 +3,11 @@ use std::{
     io::{self, Error as IoError, Write},
     net::SocketAddr,
     time::Duration,
+    sync::{
+        Arc,
+        Mutex,
+        mpsc::{SyncSender, Receiver}, atomic::{AtomicBool, Ordering},
+    }, thread,
 };
 
 use futures_channel::mpsc;
@@ -15,7 +20,7 @@ use futures_util::{
     SinkExt
 };
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{net::{TcpListener, TcpStream}, task::JoinHandle, sync::oneshot};
 use tungstenite::{protocol::Message, Error};
 use tokio_serial::{self, SerialPortBuilderExt};
 
@@ -28,6 +33,8 @@ async fn handle_connection(
     raw_stream: TcpStream,
     addr: SocketAddr,
     ryder_port: String,
+    force_disconnect_tx: SyncSender<()>,
+    force_disconnect_rx: Receiver<()>,
 ) {
     println!("Incoming TCP connection from: {}", addr);
 
@@ -54,15 +61,13 @@ async fn handle_connection(
 
     // For sending data to a dedicated thread that communicates with the serial device
     let (tx_serial, mut rx_serial) = mpsc::unbounded();
-    // For detecting client disconnects
-    let (disconnect_tx, disconnect_rx) = std::sync::mpsc::sync_channel(1);
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
         async {
             // If the client disconnected, stop listening and send a signal to close the serial
             // port as well
             if let Message::Close(_) = msg {
-                disconnect_tx.clone().send(()).unwrap();
+                force_disconnect_tx.clone().send(()).unwrap();
                 return Err(Error::ConnectionClosed);
             }
 
@@ -86,15 +91,15 @@ async fn handle_connection(
 
     let serial_io = std::thread::spawn(move || {
         loop {
-            if let Ok(()) = disconnect_rx.try_recv() {
-                break Ok::<(), tokio_serial::Error>(());
+            if let Ok(()) = force_disconnect_rx.try_recv() {
+                return Ok::<(), tokio_serial::Error>(());
             }
 
             if let Ok(data) = rx_serial.try_next() {
                 if let Some(d) = data {
                     port.write(&d)?;
                 } else {
-                    break Ok::<(), tokio_serial::Error>(());
+                    return Ok::<(), tokio_serial::Error>(());
                 }
             }
 
@@ -103,7 +108,7 @@ async fn handle_connection(
                 Ok(bytes) => tx_ws.unbounded_send(Message::Binary(buf[..bytes].to_vec())).unwrap(),
                 Err(e) => match e.kind() {
                     io::ErrorKind::WouldBlock => continue,
-                    _ => break Err(e.into()),
+                    _ => return Err(e.into()),
                 }
             }
         }
@@ -115,7 +120,7 @@ async fn handle_connection(
     future::select(broadcast_incoming, receive_from_others).await;
 
     if let Ok(Err(e)) = serial_io.join() {
-        eprintln!("Error in serial port I/O: {}", e);
+        eprintln!("Error in serial port I/O: {}, {:?}", e, e.kind());
     }
 
     outgoing.close().await.unwrap();
@@ -137,13 +142,93 @@ async fn main() -> Result<(), IoError> {
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
 
-    // Let's spawn the handling of each connection in a separate task.
-    while let Ok((stream, addr)) = listener.accept().await {
-        tokio::spawn(handle_connection(
-            stream,
-            addr,
-            ryder_port.clone(),
-        ));
+    // Set up ctrl-c handling infrastructure
+    struct ConnectionTerminator {
+        // A handle to the connection's task
+        handle: JoinHandle<()>,
+        // A sender to notify the task that it should terminate itself
+        sender: SyncSender<()>,
+        // Whether a termination signal has already been sent
+        signal_sent: bool,
     }
+    let connections: Vec<ConnectionTerminator> = Vec::new();
+    let connections = Arc::new(Mutex::new(connections));
+    let (ctrlc_tx, ctrlc_rx) = std::sync::mpsc::sync_channel(1);
+
+    ctrlc::set_handler(move || {
+        ctrlc_tx.send(()).unwrap();
+    }).unwrap();
+
+    // Watch for ctrl-c inputs in a separate thread
+    let exiting = Arc::new(AtomicBool::new(false));
+    let exiting_thread = exiting.clone();
+    let (exit_tx, exit_rx) = oneshot::channel();
+    let connections_thread = connections.clone();
+    thread::spawn(move || {
+        loop {
+            if exiting_thread.load(Ordering::SeqCst) {
+                let mut connections = connections_thread.lock().unwrap();
+                let mut all_terminated = true;
+
+                for conn in &mut *connections {
+                    if !conn.signal_sent {
+                        // Ignore errors because the connection and its receiver may have already
+                        // been dropped
+                        let _ = conn.sender.send(());
+                        conn.signal_sent = true;
+                    }
+
+                    if !conn.handle.is_finished() {
+                        all_terminated = false;
+                    }
+                }
+
+                // Exit once all remaining connections have been closed
+                if all_terminated {
+                    exit_tx.send(()).unwrap();
+                    break;
+                }
+            } else {
+                if let Ok(()) = ctrlc_rx.recv() {
+                    exiting_thread.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+    });
+
+    // Let's spawn the handling of each connection in a separate task.
+    let listen = async move {
+        while let Ok((stream, addr)) = listener.accept().await {
+            let mut connections = connections.lock().unwrap();
+
+            // Don't accept new connections while exiting
+            if exiting.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let (force_disconnect_tx, force_disconnect_rx) = std::sync::mpsc::sync_channel(1);
+            let handle = tokio::spawn(handle_connection(
+                stream,
+                addr,
+                ryder_port.clone(),
+                force_disconnect_tx.clone(),
+                force_disconnect_rx,
+            ));
+
+            // Register the connection so that it can be terminated properly on ctrl-c
+            let conn = ConnectionTerminator {
+                handle,
+                sender: force_disconnect_tx,
+                signal_sent: false,
+            };
+            connections.push(conn);
+        }
+    };
+
+    tokio::spawn(listen);
+
+    // Wait for ctrl-c
+    exit_rx.await.unwrap();
+
     Ok(())
 }
