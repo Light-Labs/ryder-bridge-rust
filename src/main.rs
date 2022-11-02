@@ -22,12 +22,14 @@ use futures_util::{
 
 use tokio::{net::{TcpListener, TcpStream}, task::JoinHandle, sync::oneshot};
 use tungstenite::{protocol::Message, Error};
-use tokio_serial::{self, SerialPortBuilderExt};
+use tokio_serial::{self, SerialPortBuilderExt, ErrorKind};
 
 // FIXME: These are placeholders; figure out actual values
 const RESPONSE_DEVICE_BUSY: u8 = 50;
 const RESPONSE_DEVICE_READY: u8 = 51;
 const RESPONSE_DEVICE_DISCONNECTED: u8 = 52;
+const RESPONSE_DEVICE_NOT_FOUND: u8 = 53;
+const RESPONSE_DEVICE_UNKNOWN: u8 = 54;
 
 async fn handle_connection(
     raw_stream: TcpStream,
@@ -53,11 +55,14 @@ async fn handle_connection(
     let mut port = match port {
         Ok(p) => p,
         Err(e) => {
-            // Notify and disconnect the client
-            if outgoing.send(Message::Binary(vec![RESPONSE_DEVICE_BUSY])).await.is_ok() {
-                if let Err(e) = outgoing.close().await {
-                    eprintln!("Failed to close WebSocket: {}", e);
-                }
+            let response = match e.kind() {
+                ErrorKind::Io(io::ErrorKind::NotFound) => RESPONSE_DEVICE_NOT_FOUND,
+                _ => RESPONSE_DEVICE_UNKNOWN,
+            };
+
+            let _ = outgoing.send(Message::Binary(vec![response])).await;
+            if let Err(e) = outgoing.close().await {
+                eprintln!("Failed to close WebSocket: {}", e);
             }
 
             eprintln!("Error opening serial port: {}, {:?}", e, e.kind());
