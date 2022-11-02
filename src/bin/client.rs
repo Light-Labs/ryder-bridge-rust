@@ -46,15 +46,7 @@ async fn main() {
 
     let stdin_to_ws = stdin_rx.map(|m| {
         if let Ok(s) = String::from_utf8(m.into_data()) {
-            let data = s
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(2)
-                .map(|c| u8::from_str_radix(&c.iter().cloned().collect::<String>(), 16))
-                .filter_map(Result::ok)
-                .collect::<Vec<_>>();
-
-            Ok(Message::binary(data))
+            Ok(Message::binary(parse_input(&s)))
         } else {
             Ok(Message::binary([]))
         }
@@ -91,5 +83,33 @@ async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Message>) {
         };
         buf.truncate(n - 1);
         tx.unbounded_send(Message::binary(buf)).unwrap();
+    }
+}
+
+// Parses a user input string into a byte array, assuming it is a sequence of two digit hexadecimal
+// numbers. Spaces and invalid parts of the input are discarded.
+fn parse_input(s: &str) -> Vec<u8> {
+    s
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .map(|c| u8::from_str_radix(&c.iter().cloned().collect::<String>(), 16))
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse_input;
+
+    #[test]
+    fn test_parse_input() {
+        assert_eq!(Vec::<u8>::new(), parse_input(""));
+        assert_eq!(vec![1], parse_input("1"));
+        assert_eq!(vec![1], parse_input("01"));
+        assert_eq!(vec![1, 2, 3], parse_input("010203"));
+        assert_eq!(vec![1, 2, 3], parse_input("01 02 03"));
+        assert_eq!(vec![1, 3], parse_input("01 xx 03"));
     }
 }
