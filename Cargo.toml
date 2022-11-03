@@ -16,4 +16,3 @@ url = "2.2.2"
 # Missing a fix for macOS: https://github.com/serialport/serialport-rs/pull/58
 # It will be included in serialport 4.2.1
 tokio-serial = "5.4.3"
-ctrlc = "3.2.3"

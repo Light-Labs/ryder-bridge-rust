@@ -15,11 +15,12 @@ use std::{env, process};
 use futures::{FutureExt, SinkExt, select};
 use futures_util::{pin_mut, StreamExt};
 use tokio::io::{AsyncReadExt};
+use tokio::signal;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::protocol::Message,
 };
-use futures_channel::{mpsc, oneshot};
+use futures_channel::mpsc;
 use url::Url;
 
 #[tokio::main]
@@ -35,12 +36,6 @@ async fn main() {
 
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     println!("WebSocket handshake has been successfully completed");
-
-    let (ctrlc_tx, mut ctrlc_rx) = oneshot::channel();
-    let mut ctrlc_tx = Some(ctrlc_tx);
-    ctrlc::set_handler(move || {
-        ctrlc_tx.take().map(|c| c.send(()));
-    }).expect("Failed to set ctrl-c handler");
 
     let (mut write, read) = ws_stream.split();
 
@@ -62,8 +57,10 @@ async fn main() {
     select!(
         _ = stdin_to_ws => {},
         _ = ws_to_stdout => {},
-        _ = ctrlc_rx => {},
-
+        // Watch for ctrl-c
+        res = signal::ctrl_c().fuse() => if let Err(e) = res {
+            eprintln!("Failed to wait for ctrl-c signal: {}", e);
+        },
     );
 
     write.close().await.expect("Failed to close websocket");
