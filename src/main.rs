@@ -122,8 +122,12 @@ async fn handle_connection(
     // Past this point, this connection is currently being served, and so `ServeNextInQueue::Yes`
     // must be returned to advance the queue.
 
-    // Open the serial port
-    let port = tokio_serial::new(ryder_port, 0) // 115_200
+    // Open the serial port (baud rate must be 0 on macOS to avoid a bug)
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let baud_rate = 0;
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let baud_rate = 115_200;
+    let port = tokio_serial::new(ryder_port, baud_rate)
         .timeout(Duration::from_millis(10))
         .open_native_async();
 
