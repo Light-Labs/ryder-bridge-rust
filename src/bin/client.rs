@@ -12,7 +12,7 @@
 
 use std::{env, process};
 
-use futures::{FutureExt, SinkExt, select};
+use futures::{FutureExt, SinkExt, TryStreamExt, select};
 use futures_util::{pin_mut, StreamExt};
 use tokio::io::{AsyncReadExt};
 use tokio::signal;
@@ -47,9 +47,10 @@ async fn main() {
         }
     }).forward(&mut write);
     let ws_to_stdout = {
-        read.for_each(|message| async {
-            let data = message.unwrap().into_data();
+        read.try_for_each(|message| async {
+            let data = message.into_data();
             println!("response: {:?}", data);
+            Ok(())
         }).fuse()
     };
 
