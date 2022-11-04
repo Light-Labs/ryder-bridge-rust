@@ -16,3 +16,8 @@ url = "2.2.2"
 # Missing a fix for macOS: https://github.com/serialport/serialport-rs/pull/58
 # It will be included in serialport 4.2.1
 tokio-serial = "5.4.3"
+
+# Temporary until serialport 4.2.1 is released
+[patch.crates-io.serialport]
+git = "https://github.com/pengowen123/serialport-rs.git"
+rev = "0ba0fcd"
