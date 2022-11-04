@@ -108,6 +108,14 @@ async fn handle_connection(
                     return ServeNextInQueue::Yes;
                 }
             }
+            // The bridge is shutting down
+            _ = ctrlc_rx.changed().fuse() => {
+                if let Err(e) = outgoing.close().await {
+                    eprintln!("Failed to close WebSocket: {}", e);
+                }
+                // This connection is not the one being served, so don't advance the queue
+                return ServeNextInQueue::No;
+            }
         }
     }
 
@@ -246,7 +254,7 @@ async fn main() -> Result<(), IoError> {
     // Set up channel to wait for all tasks to finish
     let (task_alive_token, mut tasks_finished_listener) = mpsc::channel(1);
 
-    let (ctrlc_tx, ctrlc_rx) = watch::channel(());
+    let (ctrlc_tx, mut ctrlc_rx) = watch::channel(());
     let ctrlc_rx_copy = ctrlc_rx.clone();
 
     // Let's spawn the handling of each connection in a separate task.
@@ -292,7 +300,6 @@ async fn main() -> Result<(), IoError> {
     }.fuse();
 
     // Listen for new connections until ctrl-c is received
-    let mut ctrlc_rx = ctrlc_rx.clone();
     let listen = tokio::spawn(async move {
         pin_mut!(listen);
         select! {
