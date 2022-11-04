@@ -187,7 +187,20 @@ async fn handle_connection(
             // Write data to port
             if let Ok(data) = rx_serial.try_next() {
                 if let Some(d) = data {
-                    port.write(&d)?;
+                    loop {
+                        let res = port.write(&d);
+
+                        // Keep trying if the write would block
+                        if let Err(e) = res {
+                            match e.kind() {
+                                io::ErrorKind::WouldBlock
+                                    | io::ErrorKind::Interrupted => continue,
+                                _ => return Err(e.into()),
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 } else {
                     return Ok::<(), tokio_serial::Error>(());
                 }
