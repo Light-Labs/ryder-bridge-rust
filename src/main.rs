@@ -178,27 +178,40 @@ async fn handle_connection(
 
     // Start thread to handle all serial port communication
     let serial_io = thread::spawn(move || {
+        let mut data_to_write = None;
         loop {
             // Watch for exit signal
             if let Ok(()) = close_serial_rx.try_recv() {
                 return Ok::<(), tokio_serial::Error>(());
             }
 
-            // Write data to port
-            if let Ok(data) = rx_serial.try_next() {
-                if let Some(d) = data {
-                    loop {
-                        let res = port.write(&d);
+            // Write data to port (prioritizing data that previously failed to write)
+            if data_to_write.is_none() {
+                data_to_write = rx_serial.try_next().ok();
+            }
 
-                        // Keep trying if the write would block
-                        if let Err(e) = res {
+            if let Some(ref mut data) = data_to_write {
+                if let Some(ref mut d) = data {
+                    let res = port.write(&d);
+
+                    match res {
+                        Ok(bytes) => {
+                            // Check if not all bytes were written
+                            if bytes < d.len() {
+                                d.truncate(d.len() - bytes);
+                            } else {
+                                data_to_write = None;
+                            }
+                        }
+                        Err(e) => {
                             match e.kind() {
+                                // Keep trying if the write did not fail but simply would have
+                                // blocked
                                 io::ErrorKind::WouldBlock
-                                    | io::ErrorKind::Interrupted => continue,
+                                    | io::ErrorKind::Interrupted => {},
+                                // Exit the thread on real failures
                                 _ => return Err(e.into()),
                             }
-                        } else {
-                            break;
                         }
                     }
                 } else {
