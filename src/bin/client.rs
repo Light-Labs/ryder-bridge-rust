@@ -10,7 +10,7 @@
 //!
 //! You can use this example together with the `server` example.
 
-use std::{env, process};
+use std::{env, process, error::Error};
 
 use futures::{FutureExt, SinkExt, TryStreamExt, select};
 use futures_util::{pin_mut, StreamExt};
@@ -24,17 +24,17 @@ use futures_channel::mpsc;
 use url::Url;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let connect_addr = env::args()
         .nth(1)
         .unwrap_or_else(|| panic!("this program requires at least one argument"));
 
-    let url = Url::parse(&connect_addr).unwrap();
+    let url = Url::parse(&connect_addr)?;
 
     let (stdin_tx, stdin_rx) = mpsc::unbounded();
     tokio::spawn(read_stdin(stdin_tx));
 
-    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+    let (ws_stream, _) = connect_async(url).await?;
     println!("WebSocket handshake has been successfully completed");
 
     let (mut write, read) = ws_stream.split();
@@ -47,9 +47,12 @@ async fn main() {
         }
     }).forward(&mut write);
     let ws_to_stdout = {
-        read.try_for_each(|message| async {
-            let data = message.into_data();
-            println!("response: {:?}", data);
+        read.try_for_each(|message| async move {
+            if let Message::Binary(data) = message {
+                println!("response: {:?}", data);
+            } else {
+                println!("response: {:?}", message);
+            }
             Ok(())
         }).fuse()
     };
@@ -64,7 +67,9 @@ async fn main() {
         },
     );
 
-    write.close().await.expect("Failed to close websocket");
+    if let Err(e) = write.close().await {
+        eprintln!("Failed to close WebSocket connection: {}", e);
+    }
     println!("disconnected");
     process::exit(0);
 }
