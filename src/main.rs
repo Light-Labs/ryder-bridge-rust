@@ -31,8 +31,7 @@ use crate::queue::ConnectionQueue;
 const RESPONSE_DEVICE_BUSY: u8 = 50;
 const RESPONSE_DEVICE_READY: u8 = 51;
 const RESPONSE_DEVICE_DISCONNECTED: u8 = 52;
-const RESPONSE_DEVICE_NOT_FOUND: u8 = 53;
-const RESPONSE_DEVICE_UNKNOWN: u8 = 54;
+const RESPONSE_DEVICE_ERROR: u8 = 53;
 
 /// Whether to serve the next connection in the queue after `handle_connection` returns.
 enum ServeNextInQueue {
@@ -54,6 +53,7 @@ async fn handle_connection(
     // Open the WebSocket connection
     let ws_stream = tokio_tungstenite::accept_async(raw_stream)
         .await
+        // FIXME: Return early instead of panicking here
         .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", addr);
 
@@ -134,12 +134,7 @@ async fn handle_connection(
     let mut port = match port {
         Ok(p) => p,
         Err(e) => {
-            let response = match e.kind() {
-                ErrorKind::Io(io::ErrorKind::NotFound) => RESPONSE_DEVICE_NOT_FOUND,
-                _ => RESPONSE_DEVICE_UNKNOWN,
-            };
-
-            let _ = outgoing.send(Message::binary([response])).await;
+            let _ = outgoing.send(Message::binary([RESPONSE_DEVICE_ERROR])).await;
             if let Err(e) = outgoing.close().await {
                 eprintln!("Failed to close WebSocket: {}", e);
             }
