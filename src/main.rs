@@ -51,10 +51,20 @@ async fn handle_connection(
     println!("Incoming TCP connection from: {}", addr);
 
     // Open the WebSocket connection
-    let ws_stream = tokio_tungstenite::accept_async(raw_stream)
-        .await
-        // FIXME: Return early instead of panicking here
-        .expect("Error during the websocket handshake occurred");
+    let ws_stream = match tokio_tungstenite::accept_async(raw_stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error during WebSocket handshake: {}", e);
+            // Check if this connection is the one being served and signal to advance the queue if
+            // so
+            let serve_next = if let Ok(Some(_)) = ticket_rx.try_recv() {
+                ServeNextInQueue::Yes
+            } else {
+                ServeNextInQueue::No
+            };
+            return serve_next;
+        }
+    };
     println!("WebSocket connection established: {}", addr);
 
     // Split the connection into two streams
