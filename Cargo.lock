@@ -280,6 +280,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7fcc620a3bff7cdd7a365be3376c97191aeaccc2a603e600951e452615bf89"
 
 [[package]]
+name = "libudev"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78b324152da65df7bb95acfcaab55e3097ceaab02fb19b228a9eb74d55f135e0"
+dependencies = [
+ "libc",
+ "libudev-sys",
+]
+
+[[package]]
+name = "libudev-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -323,15 +343,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
-name = "memoffset"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
 name = "mio"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,19 +355,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mio-serial"
-version = "5.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dff736ea7e2501db099ae3f82aabc14db416a01958c8354b3f353dd961a18773"
-dependencies = [
- "log",
- "mio",
- "nix",
- "serialport",
- "winapi",
-]
-
-[[package]]
 name = "nix"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -366,8 +364,6 @@ dependencies = [
  "bitflags",
  "cfg-if",
  "libc",
- "memoffset",
- "pin-utils",
 ]
 
 [[package]]
@@ -420,6 +416,12 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ac9a59f73473f1b8d852421e59e64809f025994837ef743615c6d0c5b305160"
 
 [[package]]
 name = "ppv-lite86"
@@ -508,8 +510,8 @@ dependencies = [
  "futures",
  "futures-channel",
  "futures-util",
+ "serialport",
  "tokio",
- "tokio-serial",
  "tokio-tungstenite",
  "tungstenite",
  "url",
@@ -523,13 +525,14 @@ checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
 name = "serialport"
-version = "4.2.1"
-source = "git+https://github.com/pengowen123/serialport-rs.git?rev=0ba0fcd#0ba0fcd6b662bcac42ad14f2c8ccb33b2fb32c6c"
+version = "4.2.1-alpha.0"
+source = "git+https://github.com/serialport/serialport-rs.git?rev=536e1a5#536e1a51ae72c4ce07672e2cb295f7a366080d21"
 dependencies = [
  "CoreFoundation-sys",
  "IOKit-sys",
  "bitflags",
  "cfg-if",
+ "libudev",
  "mach2",
  "nix",
  "regex",
@@ -656,19 +659,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tokio-serial"
-version = "5.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa6e2e4cf0520a99c5f87d5abb24172b5bd220de57c3181baaaa5440540c64aa"
-dependencies = [
- "cfg-if",
- "futures",
- "log",
- "mio-serial",
- "tokio",
 ]
 
 [[package]]

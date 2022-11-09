@@ -21,9 +21,9 @@ use futures_util::{
     SinkExt
 };
 
+use serialport::ClearBuffer;
 use tokio::{net::{TcpListener, TcpStream}, signal, sync::watch};
 use tungstenite::{protocol::Message, Error};
-use tokio_serial::{self, SerialPortBuilderExt, ErrorKind};
 
 use crate::queue::ConnectionQueue;
 
@@ -127,9 +127,9 @@ async fn handle_connection(
     let baud_rate = 0;
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     let baud_rate = 115_200;
-    let port = tokio_serial::new(ryder_port, baud_rate)
+    let port = serialport::new(ryder_port, baud_rate)
         .timeout(Duration::from_millis(10))
-        .open_native_async();
+        .open();
 
     let mut port = match port {
         Ok(p) => p,
@@ -143,6 +143,17 @@ async fn handle_connection(
             return ServeNextInQueue::Yes;
         }
     };
+
+    // Clear the serial port buffers to avoid reading garbage data
+    let result = port.clear(ClearBuffer::All);
+    if let Err(e) = result {
+        eprintln!("Failed to clear serial port buffers: {}", e);
+
+        if let Err(e) = outgoing.close().await {
+            eprintln!("Failed to close WebSocket: {}", e);
+            return ServeNextInQueue::Yes;
+        }
+    }
 
     // For sending data to a dedicated thread that communicates with the serial device
     let (tx_serial, mut rx_serial) = mpsc::unbounded();
@@ -177,7 +188,7 @@ async fn handle_connection(
         loop {
             // Watch for exit signal
             if let Ok(()) = close_serial_rx.try_recv() {
-                return Ok::<(), tokio_serial::Error>(());
+                return Ok::<(), serialport::Error>(());
             }
 
             // Write data to port (prioritizing data that previously failed to write)
@@ -205,21 +216,25 @@ async fn handle_connection(
                                 io::ErrorKind::WouldBlock
                                     | io::ErrorKind::Interrupted => {},
                                 // Exit the thread on real failures
+                                // FIXME: Notify the client of device disconnection here
                                 _ => return Err(e.into()),
                             }
                         }
                     }
                 } else {
-                    return Ok::<(), tokio_serial::Error>(());
+                    return Ok::<(), serialport::Error>(());
                 }
             }
 
             // Read data from port as it's received
             let mut buf = vec![0; 256];
-            match port.try_read(&mut buf) {
+            match port.read(&mut buf) {
                 Ok(bytes) => tx_ws.unbounded_send(Message::Binary(buf[..bytes].to_vec())).unwrap(),
                 Err(e) => match e.kind() {
-                    io::ErrorKind::WouldBlock => continue,
+                    // Ignore temporary read failures
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::Interrupted
+                        | io::ErrorKind::TimedOut => continue,
                     _ => {
                         tx_ws.unbounded_send(
                             Message::binary([RESPONSE_DEVICE_DISCONNECTED])
