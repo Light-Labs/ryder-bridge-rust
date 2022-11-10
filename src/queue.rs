@@ -98,10 +98,33 @@ impl ConnectionQueue {
     /// This must be called whenever a served connection completes its work, and may also be called
     /// to cancel a pending connection.
     pub fn remove(&mut self, id: usize) -> bool {
-        (0..self.queue.len())
-            .find(|i| self.queue[*i].id() == id)
+        self.find(id)
             .map(|i| self.queue.remove(i))
             .is_some()
+    }
+
+    /// Removes the connection with the specified ID and, if it was at the head of the queue, calls
+    /// [`serve_next`][Self::serve_next]. Returns whether `serve_next` was called.
+    ///
+    /// This may be called instead of [`remove`][Self::remove] to automatically advance the queue
+    /// as needed.
+    pub fn remove_and_serve_next(&mut self, id: usize) -> bool {
+        let index = self.find(id);
+
+        self.remove(id);
+
+        if index == Some(0) {
+            self.serve_next();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the index of the connection with the specified ID if it exists.
+    fn find(&self, id: usize) -> Option<usize> {
+        (0..self.queue.len())
+            .find(|i| self.queue[*i].id() == id)
     }
 }
 
@@ -125,6 +148,20 @@ mod tests {
         assert!(!queue.is_empty());
         assert_eq!(0, id_1);
         assert_eq!(1, id_2);
+    }
+
+    #[test]
+    fn test_queue_find() {
+        let mut queue = ConnectionQueue::new();
+
+        let (id_1, _rx_1) = queue.add_connection();
+        let (id_2, _rx_2) = queue.add_connection();
+        let (id_3, _rx_3) = queue.add_connection();
+
+        assert_eq!(None, queue.find(99));
+        assert_eq!(Some(0), queue.find(id_1));
+        assert_eq!(Some(1), queue.find(id_2));
+        assert_eq!(Some(2), queue.find(id_3));
     }
 
     #[test]
@@ -188,5 +225,29 @@ mod tests {
         assert!(queue.serve_next());
         // Fails because the connection was not removed
         queue.serve_next();
+    }
+
+    #[test]
+    fn test_queue_remove_and_serve_next() {
+        let mut queue = ConnectionQueue::new();
+
+        // Add some connections
+        let (id_1, _rx_1) = queue.add_connection();
+        let (id_2, _rx_2) = queue.add_connection();
+        let (id_3, _rx_3) = queue.add_connection();
+
+        // Serve connection 1
+        queue.serve_next();
+
+        // Remove connection 2 from the queue (does not serve next)
+        assert!(!queue.remove_and_serve_next(id_2));
+        // Remove connection 1 from the queue (serves connection 3)
+        assert!(queue.remove_and_serve_next(id_1));
+        assert_eq!(id_3, queue.queue[0].id());
+        // Remove connection 3 from the queue (serves next but queue is empty)
+        assert!(queue.remove_and_serve_next(id_3));
+
+        // All connections have been served and removed
+        assert!(queue.is_empty());
     }
 }

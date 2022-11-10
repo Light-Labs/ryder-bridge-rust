@@ -33,12 +33,6 @@ const RESPONSE_DEVICE_READY: u8 = 51;
 const RESPONSE_DEVICE_DISCONNECTED: u8 = 52;
 const RESPONSE_DEVICE_ERROR: u8 = 53;
 
-/// Whether to serve the next connection in the queue after `handle_connection` returns.
-enum ServeNextInQueue {
-    Yes,
-    No,
-}
-
 /// Returns whether to serve the next connection in the queue.
 async fn handle_connection(
     raw_stream: TcpStream,
@@ -47,7 +41,7 @@ async fn handle_connection(
     mut ctrlc_rx: watch::Receiver<()>,
     mut ticket_rx: oneshot::Receiver<()>,
     task_alive_token: Sender<()>,
-) -> ServeNextInQueue {
+) {
     println!("Incoming TCP connection from: {}", addr);
 
     // Open the WebSocket connection
@@ -55,14 +49,7 @@ async fn handle_connection(
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error during WebSocket handshake: {}", e);
-            // Check if this connection is the one being served and signal to advance the queue if
-            // so
-            let serve_next = if let Ok(Some(_)) = ticket_rx.try_recv() {
-                ServeNextInQueue::Yes
-            } else {
-                ServeNextInQueue::No
-            };
-            return serve_next;
+            return;
         }
     };
     println!("WebSocket connection established: {}", addr);
@@ -78,8 +65,7 @@ async fn handle_connection(
             if let Err(e) = outgoing.close().await {
                 eprintln!("Failed to close WebSocket: {}", e);
             }
-            // This connection is not the one being served, so don't advance the queue
-            return ServeNextInQueue::No;
+            return;
         }
 
         // Wait in the connection queue until this connection is ready to be served or the client
@@ -104,8 +90,7 @@ async fn handle_connection(
                 if let Err(e) = outgoing.close().await {
                     eprintln!("Failed to close WebSocket: {}", e);
                 }
-                // This connection is not the one being served, so don't advance the queue
-                return ServeNextInQueue::No;
+                return;
             },
             // This connection is being served now
             _ = ticket_rx => {
@@ -114,8 +99,7 @@ async fn handle_connection(
                     if let Err(e) = outgoing.close().await {
                         eprintln!("Failed to close WebSocket: {}", e);
                     }
-                    // This connection is currently being served, so the queue should be advanced
-                    return ServeNextInQueue::Yes;
+                    return;
                 }
             }
             // The bridge is shutting down
@@ -123,14 +107,10 @@ async fn handle_connection(
                 if let Err(e) = outgoing.close().await {
                     eprintln!("Failed to close WebSocket: {}", e);
                 }
-                // This connection is not the one being served, so don't advance the queue
-                return ServeNextInQueue::No;
+                return;
             }
         }
     }
-
-    // Past this point, this connection is currently being served, and so `ServeNextInQueue::Yes`
-    // must be returned to advance the queue.
 
     // Open the serial port (baud rate must be 0 on macOS to avoid a bug)
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -150,7 +130,7 @@ async fn handle_connection(
             }
 
             eprintln!("Error opening serial port: {}, {:?}", e, e.kind());
-            return ServeNextInQueue::Yes;
+            return;
         }
     };
 
@@ -161,7 +141,7 @@ async fn handle_connection(
 
         if let Err(e) = outgoing.close().await {
             eprintln!("Failed to close WebSocket: {}", e);
-            return ServeNextInQueue::Yes;
+            return;
         }
     }
 
@@ -282,8 +262,6 @@ async fn handle_connection(
 
     // Signal that this task is completed
     drop(task_alive_token);
-
-    ServeNextInQueue::Yes
 }
 
 #[tokio::main]
@@ -332,17 +310,13 @@ async fn main() -> Result<(), IoError> {
                 ctrlc_rx_copy.clone(),
                 ticket_rx,
                 task_alive_token.clone(),
-            ).map(move |res| {
+            ).map(move |_| {
                 println!("{} disconnected", addr);
 
-                // Remove connections from the queue when they are finished
+                // Remove connections from the queue when they are finished and serve the next in
+                // line
                 let mut queue = queue_clone.lock().unwrap();
-                queue.remove(id);
-
-                // Serve the next connection if necessary
-                if let ServeNextInQueue::Yes = res {
-                    queue.serve_next();
-                }
+                queue.remove_and_serve_next(id);
             });
 
             tokio::spawn(connection_handler);
