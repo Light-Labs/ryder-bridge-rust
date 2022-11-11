@@ -32,6 +32,7 @@ const RESPONSE_DEVICE_BUSY: &'static str = "RESPONSE_DEVICE_BUSY";
 const RESPONSE_DEVICE_READY: &'static str = "RESPONSE_DEVICE_READY";
 const RESPONSE_DEVICE_DISCONNECTED: &'static str = "RESPONSE_DEVICE_DISCONNECTED";
 const RESPONSE_DEVICE_ERROR: &'static str = "RESPONSE_DEVICE_ERROR";
+const RESPONSE_BRIDGE_SHUTDOWN: &'static str = "RESPONSE_BRIDGE_SHUTDOWN";
 
 async fn handle_connection(
     raw_stream: TcpStream,
@@ -103,6 +104,7 @@ async fn handle_connection(
             }
             // The bridge is shutting down
             _ = ctrlc_rx.changed().fuse() => {
+                let _ = outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
                 if let Err(e) = outgoing.close().await {
                     eprintln!("Failed to close WebSocket: {}", e);
                 }
@@ -165,7 +167,10 @@ async fn handle_connection(
         select! {
             _ = ws_receiver => break,
             _ = ws_sender => break,
-            _ = ctrlc_rx.changed().fuse() => break,
+            _ = ctrlc_rx.changed().fuse() => {
+                let _ = outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
+                break;
+            },
             _ = device_state.changed().fuse() => {
                 if *device_state.borrow() == DeviceState::NotConnected {
                     let _ = outgoing.send(Message::text(RESPONSE_DEVICE_DISCONNECTED)).await;
