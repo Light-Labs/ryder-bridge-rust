@@ -1,15 +1,15 @@
+mod serial;
 mod queue;
 
 use std::{
     env,
-    io::{self, Error as IoError, Write},
     net::SocketAddr,
-    time::Duration,
     sync::{
         Arc,
         Mutex,
     },
     thread,
+    error,
 };
 
 use futures_channel::{mpsc::{self, Sender}, oneshot};
@@ -21,11 +21,11 @@ use futures_util::{
     SinkExt
 };
 
-use serialport::ClearBuffer;
-use tokio::{net::{TcpListener, TcpStream}, signal, sync::watch};
-use tungstenite::{protocol::Message, Error};
+use tokio::{net::{TcpListener, TcpStream}, signal, sync::{watch, Mutex as TokioMutex}};
+use tungstenite::{protocol::Message};
 
 use crate::queue::ConnectionQueue;
+use crate::serial::{Client, DeviceState, Server};
 
 // FIXME: These are placeholders; figure out actual values
 const RESPONSE_DEVICE_BUSY: u8 = 50;
@@ -33,11 +33,10 @@ const RESPONSE_DEVICE_READY: u8 = 51;
 const RESPONSE_DEVICE_DISCONNECTED: u8 = 52;
 const RESPONSE_DEVICE_ERROR: u8 = 53;
 
-/// Returns whether to serve the next connection in the queue.
 async fn handle_connection(
     raw_stream: TcpStream,
     addr: SocketAddr,
-    ryder_port: String,
+    serial_client: Arc<TokioMutex<Client>>,
     mut ctrlc_rx: watch::Receiver<()>,
     mut ticket_rx: oneshot::Receiver<()>,
     task_alive_token: Sender<()>,
@@ -72,7 +71,7 @@ async fn handle_connection(
         // disconnects
         let watch_client_dc = (&mut incoming).try_for_each(|msg| async move {
             if let Message::Close(_) = msg {
-                Err(Error::ConnectionClosed)
+                Err(tungstenite::Error::ConnectionClosed)
             } else {
                 // Ignore messages while waiting
                 // Messages could be buffered instead, but it seems more reasonable to simply reject
@@ -112,147 +111,68 @@ async fn handle_connection(
         }
     }
 
-    // Open the serial port (baud rate must be 0 on macOS to avoid a bug)
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    let baud_rate = 0;
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    let baud_rate = 115_200;
-    let port = serialport::new(ryder_port, baud_rate)
-        .timeout(Duration::from_millis(10))
-        .open();
+    // Take control of the serial client connection
+    let mut serial_client = serial_client
+        .try_lock()
+        .expect("Serial client connection already in use");
 
-    let mut port = match port {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = outgoing.send(Message::binary([RESPONSE_DEVICE_ERROR])).await;
-            if let Err(e) = outgoing.close().await {
-                eprintln!("Failed to close WebSocket: {}", e);
-            }
+    // Destructure the client to avoid borrow checker issues
+    let Client {
+        ref mut tx,
+        ref mut rx,
+        ref mut device_state,
+    } = *serial_client;
+    let serial_tx = tx;
+    let serial_rx = rx;
 
-            eprintln!("Error opening serial port: {}, {:?}", e, e.kind());
-            return;
-        }
-    };
-
-    // Clear the serial port buffers to avoid reading garbage data
-    let result = port.clear(ClearBuffer::All);
-    if let Err(e) = result {
-        eprintln!("Failed to clear serial port buffers: {}", e);
-
+    // If the serial device is not connected, notify the client and return
+    if *device_state.borrow() == DeviceState::NotConnected {
+        let _ = outgoing.send(Message::binary([RESPONSE_DEVICE_ERROR])).await;
         if let Err(e) = outgoing.close().await {
             eprintln!("Failed to close WebSocket: {}", e);
-            return;
         }
+        return;
     }
-
-    // For sending data to a dedicated thread that communicates with the serial device
-    let (tx_serial, mut rx_serial) = mpsc::unbounded();
-    // For closing the serial IO thread
-    let (close_serial_tx, close_serial_rx) = std::sync::mpsc::sync_channel(1);
 
     // Set up message receiver for the WebSocket
     let ws_receiver = incoming.try_for_each(|msg| {
         async {
-            // If the client disconnected, stop listening and send a signal to close the serial
-            // port as well
+            // If the client disconnected, close the connection
             if let Message::Close(_) = msg {
-                close_serial_tx.send(()).unwrap();
-                return Err(Error::ConnectionClosed);
+                return Err(tungstenite::Error::ConnectionClosed);
             }
 
             let data = msg.into_data();
             println!("Received a message from {}: {:?}", addr, data);
             if data.len() > 0 {
-                tx_serial.unbounded_send(data).unwrap();
+                serial_tx.unbounded_send(data).unwrap();
             }
+
             Ok(())
         }
     }).fuse();
 
-    // Create channels for communicating with the WebSocket
-    let (tx_ws, rx_ws) = mpsc::unbounded();
-
-    // Start thread to handle all serial port communication
-    let serial_io = thread::spawn(move || {
-        let mut data_to_write = None;
-        loop {
-            // Watch for exit signal
-            if let Ok(()) = close_serial_rx.try_recv() {
-                return Ok::<(), serialport::Error>(());
-            }
-
-            // Write data to port (prioritizing data that previously failed to write)
-            if data_to_write.is_none() {
-                data_to_write = rx_serial.try_next().ok();
-            }
-
-            if let Some(ref mut data) = data_to_write {
-                if let Some(ref mut d) = data {
-                    let res = port.write(&d);
-
-                    match res {
-                        Ok(bytes) => {
-                            // Check if not all bytes were written
-                            if bytes < d.len() {
-                                d.truncate(d.len() - bytes);
-                            } else {
-                                data_to_write = None;
-                            }
-                        }
-                        Err(e) => {
-                            match e.kind() {
-                                // Keep trying if the write did not fail but simply would have
-                                // blocked
-                                io::ErrorKind::WouldBlock
-                                    | io::ErrorKind::Interrupted => {},
-                                // Exit the thread on real failures
-                                // FIXME: Notify the client of device disconnection here
-                                _ => return Err(e.into()),
-                            }
-                        }
-                    }
-                } else {
-                    return Ok::<(), serialport::Error>(());
-                }
-            }
-
-            // Read data from port as it's received
-            let mut buf = vec![0; 256];
-            match port.read(&mut buf) {
-                Ok(bytes) => tx_ws.unbounded_send(Message::Binary(buf[..bytes].to_vec())).unwrap(),
-                Err(e) => match e.kind() {
-                    // Ignore temporary read failures
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::Interrupted
-                        | io::ErrorKind::TimedOut => continue,
-                    _ => {
-                        tx_ws.unbounded_send(
-                            Message::binary([RESPONSE_DEVICE_DISCONNECTED])
-                        ).unwrap();
-                        // Close the WebSocket TX (happens automatically but this makes it clear)
-                        drop(tx_ws);
-                        return Err(e.into());
-                    }
-                }
-            }
-        }
-    });
-
     // Send responses to the WebSocket
-    let ws_sender = rx_ws.map(Ok).forward(&mut outgoing);
+    let ws_sender = serial_rx
+        .map(|d| {
+            Ok(Message::binary(d))
+        })
+        .forward(&mut outgoing);
 
-    // Wait for a ctrl-c signal or for the client or serial IO thread to end the connection
+    // Wait for a ctrl-c signal or for the client or serial IO server to end the connection
     pin_mut!(ws_receiver, ws_sender);
-    select! {
-        _ = ws_receiver => {},
-        _ = ws_sender => {},
-        // Close the serial IO thread on ctrl-c
-        _ = ctrlc_rx.changed().fuse() => close_serial_tx.send(()).unwrap(),
-    };
-
-    // Wait for the serial IO thread to exit
-    if let Ok(Err(e)) = serial_io.join() {
-        eprintln!("Error in serial port I/O: {}, {:?}", e, e.kind());
+    loop {
+        select! {
+            _ = ws_receiver => break,
+            _ = ws_sender => break,
+            _ = ctrlc_rx.changed().fuse() => break,
+            _ = device_state.changed().fuse() => {
+                if *device_state.borrow() == DeviceState::NotConnected {
+                    let _ = outgoing.send(Message::binary([RESPONSE_DEVICE_DISCONNECTED])).await;
+                    break;
+                }
+            }
+        };
     }
 
     // Close the WebSocket connection
@@ -265,7 +185,7 @@ async fn handle_connection(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), IoError> {
+async fn main() -> Result<(), Box<dyn error::Error>> {
     let mut args = env::args();
 
     let ryder_port = args.nth(1).expect("Ryder port is required");
@@ -284,6 +204,16 @@ async fn main() -> Result<(), IoError> {
 
     let (ctrlc_tx, mut ctrlc_rx) = watch::channel(());
     let ctrlc_rx_copy = ctrlc_rx.clone();
+
+    // Create a serial I/O server
+    let (serial_server, serial_client, error) = Server::new(ryder_port, ctrlc_rx.clone());
+    let serial_client = Arc::new(TokioMutex::new(serial_client));
+
+    if let Some(e) = error {
+        eprintln!("Failed to open serial port: {}", e);
+    }
+
+    let server_handle = thread::spawn(|| serial_server.run());
 
     // Let's spawn the handling of each connection in a separate task.
     let listen = async move {
@@ -306,7 +236,7 @@ async fn main() -> Result<(), IoError> {
             let connection_handler = handle_connection(
                 stream,
                 addr,
-                ryder_port.clone(),
+                serial_client.clone(),
                 ctrlc_rx_copy.clone(),
                 ticket_rx,
                 task_alive_token.clone(),
@@ -342,6 +272,9 @@ async fn main() -> Result<(), IoError> {
     listen.await.unwrap();
     // This will return `None` when all `Sender`s (owned by the tasks) have been dropped
     tasks_finished_listener.next().await;
+
+    // Wait for the serial I/O server to exit
+    server_handle.join().unwrap();
 
     println!("Shutting down");
 
