@@ -28,10 +28,10 @@ use crate::queue::ConnectionQueue;
 use crate::serial::{Client, DeviceState, Server};
 
 // FIXME: These are placeholders; figure out actual values
-const RESPONSE_DEVICE_BUSY: u8 = 50;
-const RESPONSE_DEVICE_READY: u8 = 51;
-const RESPONSE_DEVICE_DISCONNECTED: u8 = 52;
-const RESPONSE_DEVICE_ERROR: u8 = 53;
+const RESPONSE_DEVICE_BUSY: &'static str = "RESPONSE_DEVICE_BUSY";
+const RESPONSE_DEVICE_READY: &'static str = "RESPONSE_DEVICE_READY";
+const RESPONSE_DEVICE_DISCONNECTED: &'static str = "RESPONSE_DEVICE_DISCONNECTED";
+const RESPONSE_DEVICE_ERROR: &'static str = "RESPONSE_DEVICE_ERROR";
 
 async fn handle_connection(
     raw_stream: TcpStream,
@@ -59,7 +59,7 @@ async fn handle_connection(
     // Check if this connection must wait to be served
     if let Ok(None) = ticket_rx.try_recv() {
         // Notify the client that it must wait for the device to become available
-        if outgoing.send(Message::binary([RESPONSE_DEVICE_BUSY])).await.is_err() {
+        if outgoing.send(Message::text(RESPONSE_DEVICE_BUSY)).await.is_err() {
             // If the message cannot be sent, just close the connection and return
             if let Err(e) = outgoing.close().await {
                 eprintln!("Failed to close WebSocket: {}", e);
@@ -94,7 +94,7 @@ async fn handle_connection(
             // This connection is being served now
             _ = ticket_rx => {
                 // Notify the client that the device is ready
-                if let Err(_) = outgoing.send(Message::binary([RESPONSE_DEVICE_READY])).await {
+                if let Err(_) = outgoing.send(Message::text(RESPONSE_DEVICE_READY)).await {
                     if let Err(e) = outgoing.close().await {
                         eprintln!("Failed to close WebSocket: {}", e);
                     }
@@ -127,7 +127,7 @@ async fn handle_connection(
 
     // If the serial device is not connected, notify the client and return
     if *device_state.borrow() == DeviceState::NotConnected {
-        let _ = outgoing.send(Message::binary([RESPONSE_DEVICE_ERROR])).await;
+        let _ = outgoing.send(Message::text(RESPONSE_DEVICE_ERROR)).await;
         if let Err(e) = outgoing.close().await {
             eprintln!("Failed to close WebSocket: {}", e);
         }
@@ -137,7 +137,7 @@ async fn handle_connection(
     // Set up message receiver for the WebSocket
     let ws_receiver = incoming.try_for_each(|msg| {
         async {
-            // If the client disconnected, close the connection
+            // If the client disconnected, stop listening
             if let Message::Close(_) = msg {
                 return Err(tungstenite::Error::ConnectionClosed);
             }
@@ -168,7 +168,7 @@ async fn handle_connection(
             _ = ctrlc_rx.changed().fuse() => break,
             _ = device_state.changed().fuse() => {
                 if *device_state.borrow() == DeviceState::NotConnected {
-                    let _ = outgoing.send(Message::binary([RESPONSE_DEVICE_DISCONNECTED])).await;
+                    let _ = outgoing.send(Message::text(RESPONSE_DEVICE_DISCONNECTED)).await;
                     break;
                 }
             }
