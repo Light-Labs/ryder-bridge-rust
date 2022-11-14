@@ -216,14 +216,28 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Abandoned ticket")]
+    #[should_panic(expected = "TicketAlreadyServedError")]
     fn test_queue_serve_next_without_removing() {
         let mut queue = ConnectionQueue::new();
 
-        let (_, _) = queue.add_connection();
+        let (_, _rx) = queue.add_connection();
 
         assert!(queue.serve_next());
         // Fails because the connection was not removed
+        queue.serve_next();
+    }
+
+    #[test]
+    #[should_panic(expected = "Abandoned ticket")]
+    fn test_queue_serve_next_abandoned() {
+        let mut queue = ConnectionQueue::new();
+
+        let (_, rx) = queue.add_connection();
+
+        // The notification receiver is dropped, effectively abandoning the ticket
+        drop(rx);
+
+        // Fails because the connection was not removed after abandoning it
         queue.serve_next();
     }
 
