@@ -28,11 +28,11 @@ use crate::queue::ConnectionQueue;
 use crate::serial::{Client, DeviceState, Server};
 
 // FIXME: These are placeholders; figure out actual values
-const RESPONSE_DEVICE_BUSY: &'static str = "RESPONSE_DEVICE_BUSY";
-const RESPONSE_DEVICE_READY: &'static str = "RESPONSE_DEVICE_READY";
-const RESPONSE_DEVICE_DISCONNECTED: &'static str = "RESPONSE_DEVICE_DISCONNECTED";
-const RESPONSE_DEVICE_ERROR: &'static str = "RESPONSE_DEVICE_ERROR";
-const RESPONSE_BRIDGE_SHUTDOWN: &'static str = "RESPONSE_BRIDGE_SHUTDOWN";
+const RESPONSE_DEVICE_BUSY: &str = "RESPONSE_DEVICE_BUSY";
+const RESPONSE_DEVICE_READY: &str = "RESPONSE_DEVICE_READY";
+const RESPONSE_DEVICE_DISCONNECTED: &str = "RESPONSE_DEVICE_DISCONNECTED";
+const RESPONSE_DEVICE_ERROR: &str = "RESPONSE_DEVICE_ERROR";
+const RESPONSE_BRIDGE_SHUTDOWN: &str = "RESPONSE_BRIDGE_SHUTDOWN";
 
 async fn handle_connection(
     raw_stream: TcpStream,
@@ -98,7 +98,7 @@ async fn handle_connection(
                 // This connection is being served now
                 _ = ticket_rx_ref => {
                     // Notify the client that the device is ready
-                    if let Err(_) = outgoing.send(Message::text(RESPONSE_DEVICE_READY)).await {
+                    if outgoing.send(Message::text(RESPONSE_DEVICE_READY)).await.is_err() {
                         if let Err(e) = outgoing.close().await {
                             eprintln!("Failed to close WebSocket: {}", e);
                         }
@@ -149,7 +149,7 @@ async fn handle_connection(
 
                 let data = msg.into_data();
                 println!("Received a message from {}: {:?}", addr, data);
-                if data.len() > 0 {
+                if !data.is_empty() {
                     serial_tx.unbounded_send(data).unwrap();
                 }
 
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let mut args = env::args();
 
     let ryder_port = args.nth(1).expect("Ryder port is required");
-    let addr = args.nth(0).expect("Listening address is required");
+    let addr = args.next().expect("Listening address is required");
 
     println!("Listening on: {}", addr);
     println!("Ryder port: {}", ryder_port);
