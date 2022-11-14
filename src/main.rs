@@ -41,152 +41,160 @@ async fn handle_connection(
     mut ctrlc_rx: watch::Receiver<()>,
     mut ticket_rx: oneshot::Receiver<()>,
     task_alive_token: Sender<()>,
-) {
-    println!("Incoming TCP connection from: {}", addr);
+) -> oneshot::Receiver<()> {
+    let mut ticket_rx_ref = &mut ticket_rx;
+    // An async block for easier early returns
+    async move {
+        println!("Incoming TCP connection from: {}", addr);
 
-    // Open the WebSocket connection
-    let ws_stream = match tokio_tungstenite::accept_async(raw_stream).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error during WebSocket handshake: {}", e);
-            return;
-        }
-    };
-    println!("WebSocket connection established: {}", addr);
-
-    // Split the connection into two streams
-    let (mut outgoing, mut incoming) = ws_stream.split();
-
-    // Check if this connection must wait to be served
-    if let Ok(None) = ticket_rx.try_recv() {
-        // Notify the client that it must wait for the device to become available
-        if outgoing.send(Message::text(RESPONSE_DEVICE_BUSY)).await.is_err() {
-            // If the message cannot be sent, just close the connection and return
-            if let Err(e) = outgoing.close().await {
-                eprintln!("Failed to close WebSocket: {}", e);
+        // Open the WebSocket connection
+        let ws_stream = match tokio_tungstenite::accept_async(raw_stream).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error during WebSocket handshake: {}", e);
+                return;
             }
-            return;
-        }
+        };
+        println!("WebSocket connection established: {}", addr);
 
-        // Wait in the connection queue until this connection is ready to be served or the client
-        // disconnects
-        let watch_client_dc = (&mut incoming).try_for_each(|msg| async move {
-            if let Message::Close(_) = msg {
-                Err(tungstenite::Error::ConnectionClosed)
-            } else {
-                // Ignore messages while waiting
-                // Messages could be buffered instead, but it seems more reasonable to simply reject
-                // them given that the client shouldn't be sending anything until it gains access to the
-                // Ryder device anyways
-                Ok(())
-            }
-        }).fuse();
+        // Split the connection into two streams
+        let (mut outgoing, mut incoming) = ws_stream.split();
 
-        pin_mut!(watch_client_dc);
-
-        select! {
-            // The client disconnected before being served; close the connection and return
-            _ = watch_client_dc => {
+        // Check if this connection must wait to be served
+        if let Ok(None) = ticket_rx_ref.try_recv() {
+            // Notify the client that it must wait for the device to become available
+            if outgoing.send(Message::text(RESPONSE_DEVICE_BUSY)).await.is_err() {
+                // If the message cannot be sent, just close the connection and return
                 if let Err(e) = outgoing.close().await {
                     eprintln!("Failed to close WebSocket: {}", e);
                 }
                 return;
-            },
-            // This connection is being served now
-            _ = ticket_rx => {
-                // Notify the client that the device is ready
-                if let Err(_) = outgoing.send(Message::text(RESPONSE_DEVICE_READY)).await {
+            }
+
+            // Wait in the connection queue until this connection is ready to be served or the client
+            // disconnects
+            let watch_client_dc = (&mut incoming).try_for_each(|msg| async move {
+                if let Message::Close(_) = msg {
+                    Err(tungstenite::Error::ConnectionClosed)
+                } else {
+                    // Ignore messages while waiting
+                    // Messages could be buffered instead, but it seems more reasonable to simply reject
+                    // them given that the client shouldn't be sending anything until it gains access to the
+                    // Ryder device anyways
+                    Ok(())
+                }
+            }).fuse();
+
+            pin_mut!(watch_client_dc);
+
+            select! {
+                // The client disconnected before being served; close the connection and return
+                _ = watch_client_dc => {
+                    if let Err(e) = outgoing.close().await {
+                        eprintln!("Failed to close WebSocket: {}", e);
+                    }
+                    return;
+                },
+                // This connection is being served now
+                _ = ticket_rx_ref => {
+                    // Notify the client that the device is ready
+                    if let Err(_) = outgoing.send(Message::text(RESPONSE_DEVICE_READY)).await {
+                        if let Err(e) = outgoing.close().await {
+                            eprintln!("Failed to close WebSocket: {}", e);
+                        }
+                        return;
+                    }
+                }
+                // The bridge is shutting down
+                _ = ctrlc_rx.changed().fuse() => {
+                    let _ = outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
                     if let Err(e) = outgoing.close().await {
                         eprintln!("Failed to close WebSocket: {}", e);
                     }
                     return;
                 }
             }
-            // The bridge is shutting down
-            _ = ctrlc_rx.changed().fuse() => {
-                let _ = outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
-                if let Err(e) = outgoing.close().await {
-                    eprintln!("Failed to close WebSocket: {}", e);
-                }
-                return;
-            }
         }
-    }
 
-    // Take control of the serial client connection
-    let mut serial_client = serial_client
-        .try_lock()
-        .expect("Serial client connection already in use");
+        // Take control of the serial client connection
+        let mut serial_client = serial_client
+            .try_lock()
+            .expect("Serial client connection already in use");
 
-    // Destructure the client to avoid borrow checker issues
-    let Client {
-        ref mut tx,
-        ref mut rx,
-        ref mut device_state,
-    } = *serial_client;
-    let serial_tx = tx;
-    let serial_rx = rx;
+        // Destructure the client to avoid borrow checker issues
+        let Client {
+            ref mut tx,
+            ref mut rx,
+            ref mut device_state,
+        } = *serial_client;
+        let serial_tx = tx;
+        let serial_rx = rx;
 
-    // If the serial device is not connected, notify the client and return
-    if *device_state.borrow() == DeviceState::NotConnected {
-        let _ = outgoing.send(Message::text(RESPONSE_DEVICE_ERROR)).await;
+        // If the serial device is not connected, notify the client and return
+        if *device_state.borrow() == DeviceState::NotConnected {
+            let _ = outgoing.send(Message::text(RESPONSE_DEVICE_ERROR)).await;
+            if let Err(e) = outgoing.close().await {
+                eprintln!("Failed to close WebSocket: {}", e);
+            }
+            return;
+        }
+
+        // Set up message receiver for the WebSocket
+        let ws_receiver = incoming.try_for_each(|msg| {
+            async {
+                // If the client disconnected, stop listening
+                if let Message::Close(_) = msg {
+                    return Err(tungstenite::Error::ConnectionClosed);
+                }
+
+                let data = msg.into_data();
+                println!("Received a message from {}: {:?}", addr, data);
+                if data.len() > 0 {
+                    serial_tx.unbounded_send(data).unwrap();
+                }
+
+                Ok(())
+            }
+        }).fuse();
+
+        // Send responses to the WebSocket
+        let ws_sender = serial_rx
+            .map(|d| {
+                Ok(Message::binary(d))
+            })
+            .forward(&mut outgoing);
+
+        // Wait for a ctrl-c signal or for the client or serial IO server to end the connection
+        pin_mut!(ws_receiver, ws_sender);
+        loop {
+            select! {
+                _ = ws_receiver => break,
+                _ = ws_sender => break,
+                _ = ctrlc_rx.changed().fuse() => {
+                    let _ = outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
+                    break;
+                },
+                _ = device_state.changed().fuse() => {
+                    if *device_state.borrow() == DeviceState::NotConnected {
+                        let _ = outgoing.send(Message::text(RESPONSE_DEVICE_DISCONNECTED)).await;
+                        break;
+                    }
+                }
+            };
+        }
+
+        // Close the WebSocket connection
         if let Err(e) = outgoing.close().await {
             eprintln!("Failed to close WebSocket: {}", e);
         }
-        return;
-    }
 
-    // Set up message receiver for the WebSocket
-    let ws_receiver = incoming.try_for_each(|msg| {
-        async {
-            // If the client disconnected, stop listening
-            if let Message::Close(_) = msg {
-                return Err(tungstenite::Error::ConnectionClosed);
-            }
+        // Signal that this task is completed
+        drop(task_alive_token);
+    }.await;
 
-            let data = msg.into_data();
-            println!("Received a message from {}: {:?}", addr, data);
-            if data.len() > 0 {
-                serial_tx.unbounded_send(data).unwrap();
-            }
-
-            Ok(())
-        }
-    }).fuse();
-
-    // Send responses to the WebSocket
-    let ws_sender = serial_rx
-        .map(|d| {
-            Ok(Message::binary(d))
-        })
-        .forward(&mut outgoing);
-
-    // Wait for a ctrl-c signal or for the client or serial IO server to end the connection
-    pin_mut!(ws_receiver, ws_sender);
-    loop {
-        select! {
-            _ = ws_receiver => break,
-            _ = ws_sender => break,
-            _ = ctrlc_rx.changed().fuse() => {
-                let _ = outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
-                break;
-            },
-            _ = device_state.changed().fuse() => {
-                if *device_state.borrow() == DeviceState::NotConnected {
-                    let _ = outgoing.send(Message::text(RESPONSE_DEVICE_DISCONNECTED)).await;
-                    break;
-                }
-            }
-        };
-    }
-
-    // Close the WebSocket connection
-    if let Err(e) = outgoing.close().await {
-        eprintln!("Failed to close WebSocket: {}", e);
-    }
-
-    // Signal that this task is completed
-    drop(task_alive_token);
+    // The ticket receiver must not be dropped until the connection is removed from the queue, so it
+    // is returned here to the caller
+    ticket_rx
 }
 
 #[tokio::main]
@@ -245,7 +253,10 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                 ctrlc_rx_copy.clone(),
                 ticket_rx,
                 task_alive_token.clone(),
-            ).map(move |_| {
+            ).map(move |_ticket_rx| {
+                // `ticket_rx` is kept alive here so it isn't dropped before its associated
+                // connection is removed from the queue
+
                 println!("{} disconnected", addr);
 
                 // Remove connections from the queue when they are finished and serve the next in
