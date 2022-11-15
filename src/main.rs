@@ -147,8 +147,8 @@ async fn handle_connection(
                     return Err(tungstenite::Error::ConnectionClosed);
                 }
 
+                println!("Received a message from {}: {:?}", addr, msg);
                 let data = msg.into_data();
-                println!("Received a message from {}: {:?}", addr, data);
                 if !data.is_empty() {
                     serial_tx.unbounded_send(data).unwrap();
                 }
@@ -160,6 +160,7 @@ async fn handle_connection(
         // Send responses to the WebSocket
         let ws_sender = serial_rx
             .map(|d| {
+                println!("Received a response from the device: {:?}", d);
                 Ok(Message::binary(d))
             })
             .forward(&mut outgoing);
