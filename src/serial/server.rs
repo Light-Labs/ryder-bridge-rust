@@ -4,7 +4,8 @@ use serialport::{ClearBuffer, Error, SerialPort};
 use tokio::sync::watch::{self, Receiver, Sender};
 use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use std::{io, thread};
+use std::io::{self, Write};
+use std::thread;
 use std::time::Duration;
 
 use super::{Client, Data, DeviceState};
@@ -110,7 +111,7 @@ impl Server {
     /// accessed.
     fn process_io(&mut self) -> Result<(), Error> {
         // This function will never be called while the port is closed
-        let port = self.port.as_mut().unwrap();
+        let mut port = self.port.as_mut().unwrap();
 
         // Write data to port (prioritizing data that previously failed to write)
         if self.data_to_write.is_none() {
@@ -121,17 +122,10 @@ impl Server {
         }
 
         if let Some(ref mut d) = self.data_to_write {
-            let res = port.write(d);
+            let res = write(&mut port, d);
 
             match res {
-                Ok(bytes) => {
-                    // Check if not all bytes were written
-                    if bytes < d.len() {
-                        d.truncate(d.len() - bytes);
-                    } else {
-                        self.data_to_write = None;
-                    }
-                }
+                Ok(remaining) => self.data_to_write = remaining,
                 Err(e) => {
                     match e.kind() {
                         // Ignore temporary write failures
@@ -160,6 +154,18 @@ impl Server {
     }
 }
 
+/// Writes `data` to `out`. Returns `Ok(None)` if all the data was successfully written, or
+/// `Ok(Some)` with the remaining data otherwise.
+fn write<F: Write>(mut out: F, data: &[u8]) -> Result<Option<Vec<u8>>, io::Error> {
+    let bytes = out.write(data)?;
+
+    if bytes < data.len() {
+        Ok(Some(data[bytes..].to_vec()))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Attempts to open the serial port at the provided path.
 fn open_serial_port(path: &str) -> Result<Box<dyn SerialPort>, Error> {
     // The baud rate must be set to 0 on macOS to avoid a bug
@@ -177,4 +183,22 @@ fn open_serial_port(path: &str) -> Result<Box<dyn SerialPort>, Error> {
             // Clear the serial port buffers to avoid reading garbage data
             p.clear(ClearBuffer::All).map(|_| p)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_write() {
+        let mut buf = vec![0; 4];
+        let data = vec![1, 2, 3, 4];
+        // All the data was written
+        assert_eq!(None, write(&mut buf[..], &data).unwrap());
+
+        let mut buf = vec![0; 3];
+        let data = vec![1, 2, 3, 4];
+        // Remaining data is returned
+        assert_eq!(Some(vec![4]), write(&mut buf[..], &data).unwrap());
+    }
 }

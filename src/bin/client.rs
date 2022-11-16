@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (mut write, read) = ws_stream.split();
 
     let stdin_to_ws = stdin_rx.map(|m| {
-        if let Ok(s) = String::from_utf8(m.into_data()) {
+        if let Ok(s) = String::from_utf8(m) {
             Ok(Message::binary(parse_input(&s)))
         } else {
             Ok(Message::binary([]))
@@ -76,16 +76,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 // Our helper method which will read data from stdin and send it along the
 // sender provided.
-async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Message>) {
+async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Vec<u8>>) {
     let mut stdin = tokio::io::stdin();
+    let mut input = Vec::new();
+    let mut buf = vec![0; 1024];
     loop {
-        let mut buf = vec![0; 1024];
-        let n = match stdin.read(&mut buf).await {
+        let bytes = match stdin.read(&mut buf).await {
             Err(_) | Ok(0) => break,
             Ok(n) => n,
         };
-        buf.truncate(n - 1);
-        tx.unbounded_send(Message::binary(buf)).unwrap();
+
+        // Add the most recent input to any previously stored input
+        input.extend(&buf[..bytes]);
+        let mut start = 0;
+
+        // Get all newline-delimited inputs
+        while let Some((i, _)) = input[start..].iter().enumerate().find(|(_, &c)| c == b'\n') {
+            tx.unbounded_send(input[start..i + 1].to_vec()).unwrap();
+
+            // If the newline was not the last character, continue searching the remaining data
+            start = i + 1;
+            if i == input.len() - 1 {
+                break;
+            }
+        }
+
+        // Carry over incomplete data to the next iteration
+        if start < input.len() {
+            let remaining = input[start..].to_vec();
+            input.clear();
+            input.extend(remaining);
+        } else {
+            input.clear();
+        }
     }
 }
 
