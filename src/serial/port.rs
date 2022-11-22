@@ -8,7 +8,7 @@ use std::time::Duration;
 /// A function for opening serial ports given a path.
 pub type OpenPortFn = Box<dyn Fn(&str) -> serialport::Result<Box<dyn SerialPort>> + Send>;
 
-/// A wrapper around a serial port.
+/// A wrapper around a serial port that can be reopened if the serial port is closed.
 pub struct Port {
     /// The function to use when opening the serial port.
     open: OpenPortFn,
@@ -110,13 +110,15 @@ impl Port {
             };
 
             self.port = port;
-            // Check whether a device is connected if the port is open
+            // Check whether a device is connected
             self.update_port_state()?;
 
-            if self.device_connected {
-                error
-            } else {
+            // Return an error if the port was successfully opened but a device is not connected to
+            // it
+            if self.port.is_some() && !self.device_connected {
                 Err(not_connected_error)
+            } else {
+                error
             }
         }
     }
