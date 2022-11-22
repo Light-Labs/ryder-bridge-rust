@@ -31,7 +31,7 @@ use crate::serial::{Client, DeviceState, Server};
 const RESPONSE_DEVICE_BUSY: &str = "RESPONSE_DEVICE_BUSY";
 const RESPONSE_DEVICE_READY: &str = "RESPONSE_DEVICE_READY";
 const RESPONSE_DEVICE_DISCONNECTED: &str = "RESPONSE_DEVICE_DISCONNECTED";
-const RESPONSE_DEVICE_ERROR: &str = "RESPONSE_DEVICE_ERROR";
+const RESPONSE_DEVICE_NOT_CONNECTED: &str = "RESPONSE_DEVICE_NOT_CONNECTED";
 const RESPONSE_BRIDGE_SHUTDOWN: &str = "RESPONSE_BRIDGE_SHUTDOWN";
 
 async fn handle_connection(
@@ -132,7 +132,7 @@ async fn handle_connection(
 
         // If the serial device is not connected, notify the client and return
         if *device_state.borrow() == DeviceState::NotConnected {
-            let _ = outgoing.send(Message::text(RESPONSE_DEVICE_ERROR)).await;
+            let _ = outgoing.send(Message::text(RESPONSE_DEVICE_NOT_CONNECTED)).await;
             if let Err(e) = outgoing.close().await {
                 eprintln!("Failed to close WebSocket: {}", e);
             }
@@ -223,7 +223,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let (serial_server, serial_client, error) = Server::new(ryder_port, ctrlc_rx.clone());
     let serial_client = Arc::new(TokioMutex::new(serial_client));
 
-    if let Some(e) = error {
+    if let Err(e) = error {
         eprintln!("Failed to open serial port: {}", e);
     }
 

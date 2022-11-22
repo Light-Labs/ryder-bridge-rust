@@ -1,22 +1,23 @@
 /// A server for serial port communication.
 
-use serialport::{ClearBuffer, Error, SerialPort};
+use serialport::Error;
 use tokio::sync::watch::{self, Receiver, Sender};
 use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::thread;
 use std::time::Duration;
 
 use super::{Client, Data, DeviceState};
+use super::port::Port;
 
 /// A server that directly communicates with a serial port, forwarding data to and from a
 /// [`Client`] and handling serial device disconnections and reconnections.
 pub struct Server {
-    /// The path to the serial port.
-    path: String,
-    /// The serial port itself if it is currently opened.
-    port: Option<Box<dyn SerialPort>>,
+    /// The serial port itself.
+    port: Port,
+    /// Whether the serial port was accessible when last accessed.
+    port_accessible: bool,
     /// A sender for notifying the client of serial device state changes (i.e., reconnections and
     /// disconnections).
     device_state: Sender<DeviceState>,
@@ -36,18 +37,14 @@ impl Server {
     /// Returns a new `Server`, [`Client`], and an error if the serial port could not be opened.
     ///
     /// The server will continue to retry opening the serial port even if it fails initially.
-    pub fn new(path: String, ctrlc_rx: Receiver<()>) -> (Self, Client, Option<Error>) {
+    pub fn new(path: String, ctrlc_rx: Receiver<()>) -> (Self, Client, Result<(), Error>) {
         // Try to open the serial port
-        let port = open_serial_port(&path);
+        let (port, error) = Port::new(path);
 
-        let initial_state = match port {
-            Ok(_) => DeviceState::Connnected,
-            Err(_) => DeviceState::NotConnected,
-        };
-
-        let (port, error) = match port {
-            Ok(p) => (Some(p), None),
-            Err(e) => (None, Some(e)),
+        let initial_state = if error.is_ok() {
+            DeviceState::Connnected
+        } else {
+            DeviceState::NotConnected
         };
 
         // Open the device state channel
@@ -58,8 +55,8 @@ impl Server {
         let (read_tx, read_rx) = mpsc::unbounded();
 
         let server = Server {
-            path,
             port,
+            port_accessible: error.is_ok(),
             device_state: device_state_tx,
             read_buf: vec![0; 256],
             data_to_write: None,
@@ -83,23 +80,15 @@ impl Server {
                 break;
             }
 
-            if self.port.is_some() {
-                // If the port is open, process I/O
+            if self.port_accessible {
+                // If the port is accessible, process I/O
                 if let Err(e) = self.process_io() {
-                    // If the port could not be accessed, the device was probably disconnected, so the
-                    // port should be closed
-                    println!("Device disconnected: {}", e);
-                    self.port = None;
-                    self.device_state.send(DeviceState::NotConnected).unwrap();
+                    self.on_device_disconnected(e);
                 }
             } else {
                 // Otherwise, keep retrying to re-open it
-                match open_serial_port(&self.path) {
-                    Ok(p) => {
-                        println!("Device reconnected");
-                        self.port = Some(p);
-                        self.device_state.send(DeviceState::Connnected).unwrap();
-                    }
+                match self.port.try_open() {
+                    Ok(_) => self.on_device_connected(),
                     // Don't retry too often
                     Err(_) => thread::sleep(Duration::from_secs(2)),
                 }
@@ -107,12 +96,24 @@ impl Server {
         }
     }
 
+    /// Updates the port state flag and notifies the client that the serial device disconnected.
+    fn on_device_disconnected(&mut self, error: Error) {
+        println!("Device disconnected: {}", error);
+        self.port_accessible = false;
+        self.device_state.send(DeviceState::NotConnected).unwrap();
+    }
+
+    /// Updates the port state flag and notifies the client that the serial device connected or
+    /// reconnected.
+    fn on_device_connected(&mut self) {
+        println!("Device connected");
+        self.port_accessible = true;
+        self.device_state.send(DeviceState::Connnected).unwrap();
+    }
+
     /// Processes serial port and [`Client`] I/O. Returns `Err` if the serial port could not be
     /// accessed.
     fn process_io(&mut self) -> Result<(), Error> {
-        // This function will never be called while the port is closed
-        let mut port = self.port.as_mut().unwrap();
-
         // Write data to port (prioritizing data that previously failed to write)
         if self.data_to_write.is_none() {
             // The unwrap here will fail if the channel is closed, but the server should always
@@ -122,7 +123,7 @@ impl Server {
         }
 
         if let Some(ref mut d) = self.data_to_write {
-            let res = write(&mut port, d);
+            let res = write(&mut self.port, d);
 
             match res {
                 Ok(remaining) => self.data_to_write = remaining,
@@ -139,7 +140,7 @@ impl Server {
         }
 
         // Read data from port as it's received
-        match port.read(&mut self.read_buf) {
+        match self.port.read(&mut self.read_buf) {
             Ok(bytes) => self.tx.unbounded_send(self.read_buf[..bytes].to_vec()).unwrap(),
             Err(e) => match e.kind() {
                 // Ignore temporary read failures
@@ -164,25 +165,6 @@ fn write<F: Write>(mut out: F, data: &[u8]) -> Result<Option<Vec<u8>>, io::Error
     } else {
         Ok(None)
     }
-}
-
-/// Attempts to open the serial port at the provided path.
-fn open_serial_port(path: &str) -> Result<Box<dyn SerialPort>, Error> {
-    // The baud rate must be set to 0 on macOS to avoid a bug
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    let baud_rate = 0;
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    let baud_rate = 115_200;
-
-    let timeout = Duration::from_millis(10);
-
-    serialport::new(path, baud_rate)
-        .timeout(timeout)
-        .open()
-        .and_then(|p| {
-            // Clear the serial port buffers to avoid reading garbage data
-            p.clear(ClearBuffer::All).map(|_| p)
-        })
 }
 
 #[cfg(test)]
