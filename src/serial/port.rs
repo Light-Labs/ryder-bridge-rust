@@ -1,6 +1,6 @@
 //! Abstractions for working with serial ports.
 
-use serialport::{ClearBuffer, Error, ErrorKind, SerialPort, FlowControl};
+use serialport::{ClearBuffer, SerialPort};
 
 use std::io::{self, Write, Read};
 use std::time::Duration;
@@ -81,12 +81,6 @@ impl Port {
     /// If the serial port is already open, this function will only check whether a device is
     /// connected to it.
     pub fn try_open(&mut self) -> serialport::Result<()> {
-        // To possibly be returned later
-        let not_connected_error = Error::new(
-            ErrorKind::NoDevice,
-            "The serial port is open but no device is connected",
-        );
-
         if self.port.is_some() {
             // If the port is already open, check if a device is connected
             match self.update_port_state() {
@@ -96,7 +90,7 @@ impl Port {
                         Ok(())
                     } else {
                         // If there is not, return an error
-                        Err(not_connected_error)
+                        Err(get_not_connected_error().into())
                     }
                 },
                 // If there was an error while checking, return it
@@ -116,7 +110,7 @@ impl Port {
             // Return an error if the port was successfully opened but a device is not connected to
             // it
             if self.port.is_some() && !self.device_connected {
-                Err(not_connected_error)
+                Err(get_not_connected_error().into())
             } else {
                 error
             }
@@ -132,9 +126,10 @@ impl Port {
         self.update_port_state()?;
 
         if self.is_accessible() {
-            f(self.port.as_mut().unwrap().as_mut())
+            let res = f(self.port.as_mut().unwrap().as_mut());
+            res
         } else {
-            Err(io::ErrorKind::NotFound.into())
+            Err(get_not_connected_error())
         }
     }
 }
@@ -176,18 +171,26 @@ fn open_serial_port(path: &str) -> serialport::Result<Box<dyn SerialPort>> {
 
 /// Returns whether a device is connected to the serial port, or `Err` if it could not be accessed.
 fn is_device_connected<P: SerialPort + ?Sized>(port: &mut P) -> serialport::Result<bool> {
-    match port.flow_control()? {
-        // No flow control is used on unix-like systems, but the port must still be accessed in some
-        // way to detect errors
-        FlowControl::None => port.bytes_to_read().map(|_| true),
-        // If RTS/CTS or XON/XOFF are available, use them
-        FlowControl::Hardware | FlowControl::Software => port.read_clear_to_send(),
-    }
+    #[cfg(target_os = "windows")]
+    return port.read_clear_to_send();
+    // No flow control is used on unix-like systems, but the port must still be accessed in some
+    // way to detect errors
+    #[cfg(not(target_os = "windows"))]
+    return port.bytes_to_read().map(|_| true);
 }
+
+/// Returns an error for when a serial port is open, but no device is connected to it.
+fn get_not_connected_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "The serial port is open but no device is connected",
+    )
+}
+
 
 #[cfg(test)]
 mod tests {
-    use serialport::{DataBits, Parity, StopBits};
+    use serialport::{DataBits, FlowControl, Parity, StopBits};
 
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
