@@ -4,6 +4,10 @@ use std::collections::VecDeque;
 
 use futures_channel::oneshot::{self, Receiver, Sender};
 
+/// A type that can be `await`ed to to be notified of when a ticket in the queue is now being
+/// served.
+pub type TicketNotifier = Receiver<()>;
+
 /// An attempt was made to serve a ticket that was already served.
 #[derive(Debug)]
 pub struct TicketAlreadyServedError;
@@ -17,9 +21,10 @@ struct ConnectionTicket {
 }
 
 impl ConnectionTicket {
-    /// Creates a new `ConnectionTicket` and returns the ticket and its corresponding [`Receiver`],
-    /// which can be `await`ed to be notified when the ticket is ready to be served.
-    fn new(id: usize) -> (Self, Receiver<()>) {
+    /// Creates a new `ConnectionTicket` and returns the ticket and its corresponding
+    /// [`TicketNotifier`], which can be `await`ed to be notified when the ticket is ready to be
+    /// served.
+    fn new(id: usize) -> (Self, TicketNotifier) {
         let (tx, rx) = oneshot::channel();
 
         let ticket = ConnectionTicket {
@@ -68,9 +73,9 @@ impl ConnectionQueue {
         self.queue.is_empty()
     }
 
-    /// Adds a connection to the queue and returns its ID in the queue and a [`Receiver`], which can
-    /// be `await`ed to be notified of when the connection is ready to be served.
-    pub fn add_connection(&mut self) -> (usize, Receiver<()>) {
+    /// Adds a connection to the queue and returns its ID in the queue and a [`TicketNotifier`],
+    /// which can be `await`ed to be notified of when the connection is ready to be served.
+    pub fn add_connection(&mut self) -> (usize, TicketNotifier) {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -89,6 +94,7 @@ impl ConnectionQueue {
     pub fn serve_next(&mut self) -> bool {
         self.queue
             .front_mut()
+            // TODO: Automatically ignore and remove abandoned tickets here to simplify connection logic
             .map(|c| c.try_serve().unwrap())
             .is_some()
     }
