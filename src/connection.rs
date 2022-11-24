@@ -124,11 +124,7 @@ impl Waiting {
     /// reason before being served.
     async fn wait_in_queue(mut self) -> Result<Active, TicketNotifier> {
         // Notify the client that it must wait for the device to become available
-        if self.shared.ws_outgoing.send(Message::text(RESPONSE_DEVICE_BUSY)).await.is_err() {
-            // If the message cannot be sent, just close the connection and return
-            if let Err(e) = self.shared.ws_outgoing.close().await {
-                eprintln!("Failed to close WebSocket: {}", e);
-            }
+        if send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_BUSY).await.is_err() {
             return Err(self.shared.ticket_rx);
         }
 
@@ -151,31 +147,21 @@ impl Waiting {
         select! {
             // The client disconnected before being served; close the connection and return
             _ = watch_client_dc => {
-                if let Err(e) = self.shared.ws_outgoing.close().await {
-                    eprintln!("Failed to close WebSocket: {}", e);
-                }
+                close(&mut self.shared.ws_outgoing).await;
                 return Err(self.shared.ticket_rx);
             },
             // This connection is being served now
             _ = &mut self.shared.ticket_rx => {
                 // Notify the client that the device is ready
-                if self.shared.ws_outgoing
-                    .send(Message::text(RESPONSE_DEVICE_READY))
-                    .await
-                    .is_err()
+                if send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_READY).await.is_err()
                 {
-                    if let Err(e) = self.shared.ws_outgoing.close().await {
-                        eprintln!("Failed to close WebSocket: {}", e);
-                    }
                     return Err(self.shared.ticket_rx);
                 }
             }
             // The bridge is shutting down
             _ = self.shared.ctrlc_rx.changed().fuse() => {
                 let _ = self.shared.ws_outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
-                if let Err(e) = self.shared.ws_outgoing.close().await {
-                    eprintln!("Failed to close WebSocket: {}", e);
-                }
+                close(&mut self.shared.ws_outgoing).await;
                 return Err(self.shared.ticket_rx);
             }
         }
@@ -217,9 +203,7 @@ impl Active {
             let _ = self.shared
                 .ws_outgoing
                 .send(Message::text(RESPONSE_DEVICE_NOT_CONNECTED)).await;
-            if let Err(e) = self.shared.ws_outgoing.close().await {
-                eprintln!("Failed to close WebSocket: {}", e);
-            }
+            close(&mut self.shared.ws_outgoing).await;
             return self.shared.ticket_rx;
         }
 
@@ -275,9 +259,7 @@ impl Active {
         }
 
         // Close the WebSocket connection
-        if let Err(e) = self.shared.ws_outgoing.close().await {
-            eprintln!("Failed to close WebSocket: {}", e);
-        }
+        close(&mut self.shared.ws_outgoing).await;
 
         // The ticket receiver must not be dropped until the connection is removed from the queue, so it
         // is returned here to the caller
@@ -321,3 +303,22 @@ impl SharedState {
     }
 }
 
+/// Attempts to send a text message to the connection, or closes it and returns `Err` in case of
+/// failure. Prints any errors encountered.
+async fn send_or_close(connection: &mut WSOutgoingSink, message: &str) -> Result<(), ()> {
+    if let Err(e) = connection.send(Message::text(message.to_string())).await {
+        eprintln!("Failed to send message, closing connection: {}", e);
+        close(connection).await;
+
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+/// Closes a WebSocket connection or prints an error in case of failure.
+async fn close(connection: &mut WSOutgoingSink) {
+    if let Err(e) = connection.close().await {
+        eprintln!("Failed to close WebSocket: {}", e);
+    }
+}
