@@ -1,8 +1,8 @@
 [package]
-name = "ryder-bridge-rust"
+name = "ryder-bridge"
 version = "0.1.0"
 edition = "2021"
-default-run = "ryder-bridge-rust"
+default-run = "ryder-bridge"
 
 
 [dependencies]
