@@ -171,10 +171,10 @@ fn open_serial_port(path: &str) -> serialport::Result<Box<dyn SerialPort>> {
 
 /// Returns whether a device is connected to the serial port, or `Err` if it could not be accessed.
 fn is_device_connected<P: SerialPort + ?Sized>(port: &mut P) -> serialport::Result<bool> {
-    // Read CTS signal on Windows
+    // Read DSR signal on Windows
     // Also read it during tests to allow all port logic to be tested properly
     #[cfg(any(target_os = "windows", test))]
-    return port.read_clear_to_send();
+    return port.read_data_set_ready();
     // No flow control is used on unix-like systems, but the port must still be accessed in some
     // way to detect errors
     #[cfg(not(any(target_os = "windows", test)))]
@@ -205,15 +205,15 @@ mod tests {
     #[derive(Clone)]
     struct TestPort {
         // Determines whether the port is currently accessible
-        cts: Arc<AtomicBool>,
+        dsr: Arc<AtomicBool>,
         // Whether the port has an error and must close
         error: Arc<AtomicBool>,
     }
 
     impl TestPort {
-        fn new(cts: Arc<AtomicBool>, error: Arc<AtomicBool>) -> serialport::Result<Self> {
+        fn new(dsr: Arc<AtomicBool>, error: Arc<AtomicBool>) -> serialport::Result<Self> {
             Ok(TestPort {
-                cts,
+                dsr,
                 error,
             })
         }
@@ -306,8 +306,7 @@ mod tests {
         }
 
         fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
-            // Read from the Arc to allow tests to set the CTS signal externally
-            self.access().map(|_| self.cts.load(Ordering::SeqCst)).map_err(Into::into)
+            self.access().map(|_| true).map_err(Into::into)
         }
 
         fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
@@ -327,7 +326,8 @@ mod tests {
         }
 
         fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
-            self.access().map(|_| true).map_err(Into::into)
+            // Read from the Arc to allow tests to set the DSR signal externally
+            self.access().map(|_| self.dsr.load(Ordering::SeqCst)).map_err(Into::into)
         }
 
         fn clear(&self, _buffer_to_clear: ClearBuffer) -> serialport::Result<()> {
@@ -348,36 +348,36 @@ mod tests {
     }
 
     /// Returns a `Port` that uses a `TestPort`, any error returned while creating it, a handle to
-    /// control the CTS signal, and a handle to control the error flag.
+    /// control the DSR signal, and a handle to control the error flag.
     fn initialize_port(
-        initial_cts: bool,
+        initial_dsr: bool,
     ) -> (Port, serialport::Result<()>, Arc<AtomicBool>, Arc<AtomicBool>) {
-        let cts: Arc<AtomicBool> = Arc::new(initial_cts.into());
+        let dsr: Arc<AtomicBool> = Arc::new(initial_dsr.into());
         let error_flag: Arc<AtomicBool> = Arc::new(false.into());
 
-        let cts_clone: Arc<AtomicBool> = cts.clone();
+        let dsr_clone: Arc<AtomicBool> = dsr.clone();
         let error_flag_clone: Arc<AtomicBool> = error_flag.clone();
         let open_fn = move |_: &str| {
-            TestPort::new(cts_clone.clone(), error_flag_clone.clone()).map(|p| Box::new(p) as _)
+            TestPort::new(dsr_clone.clone(), error_flag_clone.clone()).map(|p| Box::new(p) as _)
         };
 
         let (port, error) = Port::new_with_open_fn(FAKE_PORT.to_string(), Box::new(open_fn));
 
-        (port, error, cts, error_flag)
+        (port, error, dsr, error_flag)
     }
 
     #[test]
     fn test_test_port() {
-        let cts = Arc::new(true.into());
+        let dsr = Arc::new(true.into());
         let error = Arc::new(false.into());
-        let mut port = TestPort::new(cts, error).unwrap();
+        let mut port = TestPort::new(dsr, error).unwrap();
 
         assert!(port.write(&[]).is_ok());
         assert!(port.flush().is_ok());
         assert!(port.read(&mut []).is_ok());
 
-        // Accesses succeed despite the `cts` flag being false
-        port.cts.store(false, Ordering::SeqCst);
+        // Accesses succeed despite the `dsr` flag being false
+        port.dsr.store(false, Ordering::SeqCst);
 
         assert!(port.write(&[]).is_ok());
         assert!(port.flush().is_ok());
@@ -396,7 +396,7 @@ mod tests {
         let (_, error) = Port::new(FAKE_PORT.to_string());
         assert!(error.is_err());
 
-        // This opens a port that is inaccessible (its CTS signal is false)
+        // This opens a port that is inaccessible (its DSR signal is false)
         let (_, error, _, _) = initialize_port(false);
         assert!(error.is_err());
 
@@ -424,11 +424,11 @@ mod tests {
 
     #[test]
     fn test_update_port_state() {
-        let (mut port, _, cts, error) = initialize_port(true);
+        let (mut port, _, dsr, error) = initialize_port(true);
         assert!(port.is_accessible());
 
         // Make the device inaccessible
-        cts.store(false, Ordering::SeqCst);
+        dsr.store(false, Ordering::SeqCst);
 
         // The port still thinks it's accessible because no accesses were attempted
         assert!(port.is_accessible());
@@ -439,7 +439,7 @@ mod tests {
         assert!(port.port.is_some());
 
         // Make the device accessible again
-        cts.store(true, Ordering::SeqCst);
+        dsr.store(true, Ordering::SeqCst);
 
         // Update the port's state again
         assert!(!port.is_accessible());
@@ -457,12 +457,12 @@ mod tests {
 
     #[test]
     fn test_try_open() {
-        let (mut port, _, cts, error) = initialize_port(true);
+        let (mut port, _, dsr, error) = initialize_port(true);
 
         assert!(port.try_open().is_ok());
 
         // Make the device inaccessible
-        cts.store(false, Ordering::SeqCst);
+        dsr.store(false, Ordering::SeqCst);
 
         // `try_open` now fails, but the port is still open
         assert!(port.try_open().is_err());
@@ -470,7 +470,7 @@ mod tests {
         assert!(port.port.is_some());
 
         // Make the device accessible again
-        cts.store(true, Ordering::SeqCst);
+        dsr.store(true, Ordering::SeqCst);
 
         assert!(port.try_open().is_ok());
         assert!(port.is_accessible());
@@ -496,19 +496,19 @@ mod tests {
 
     #[test]
     fn test_io() {
-        let (mut port, _, cts, error) = initialize_port(true);
+        let (mut port, _, dsr, error) = initialize_port(true);
 
         assert!(port.write(&[]).is_ok());
         assert!(port.read(&mut []).is_ok());
 
         // Make the device inaccessible
-        cts.store(false, Ordering::SeqCst);
+        dsr.store(false, Ordering::SeqCst);
 
         assert!(port.write(&[]).is_err());
         assert!(port.read(&mut []).is_err());
 
         // Make the device accessible again
-        cts.store(true, Ordering::SeqCst);
+        dsr.store(true, Ordering::SeqCst);
 
         assert!(port.write(&[]).is_ok());
         assert!(port.read(&mut []).is_ok());
