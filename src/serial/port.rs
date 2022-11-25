@@ -171,11 +171,13 @@ fn open_serial_port(path: &str) -> serialport::Result<Box<dyn SerialPort>> {
 
 /// Returns whether a device is connected to the serial port, or `Err` if it could not be accessed.
 fn is_device_connected<P: SerialPort + ?Sized>(port: &mut P) -> serialport::Result<bool> {
-    #[cfg(target_os = "windows")]
+    // Read CTS signal on Windows
+    // Also read it during tests to allow all port logic to be tested properly
+    #[cfg(any(target_os = "windows", test))]
     return port.read_clear_to_send();
     // No flow control is used on unix-like systems, but the port must still be accessed in some
     // way to detect errors
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", test)))]
     return port.bytes_to_read().map(|_| true);
 }
 
