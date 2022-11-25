@@ -358,11 +358,14 @@ mod tests {
 
         let dsr_clone: Arc<AtomicBool> = dsr.clone();
         let error_flag_clone: Arc<AtomicBool> = error_flag.clone();
-        let open_fn = move |_: &str| {
+        let open_fn = move |_: &Path| {
             TestPort::new(dsr_clone.clone(), error_flag_clone.clone()).map(|p| Box::new(p) as _)
         };
 
-        let (port, error) = Port::new_with_open_fn(FAKE_PORT.to_string(), Box::new(open_fn));
+        let (port, error) = Port::new_with_open_fn(
+            Path::new(FAKE_PORT).into(),
+            Box::new(open_fn),
+        );
 
         (port, error, dsr, error_flag)
     }
@@ -394,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let (_, error) = Port::new(FAKE_PORT.to_string());
+        let (_, error) = Port::new(Path::new(FAKE_PORT).into());
         assert!(error.is_err());
 
         // This opens a port that is inaccessible (its DSR signal is false)
