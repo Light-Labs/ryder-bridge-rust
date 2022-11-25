@@ -39,8 +39,7 @@ pub struct WSConnection {
 impl WSConnection {
     /// Creates a new `WSConnection` to handle an incoming WebSocket connection from `addr`.
     ///
-    /// Returns `Err` with an error and the connection queue ticket notifier if a connection could
-    /// not be established.
+    /// Returns `Err` if a connection could not be established.
     pub async fn new(
         raw_stream: TcpStream,
         addr: SocketAddr,
@@ -48,14 +47,11 @@ impl WSConnection {
         ctrlc_rx: watch::Receiver<()>,
         mut ticket_rx: TicketNotifier,
         task_alive_token: TaskAliveToken,
-    ) -> Result<Self, (Error, TicketNotifier)> {
+    ) -> Result<Self, Error> {
         println!("Incoming TCP connection from: {}", addr);
 
         // Open the WebSocket connection
-        let ws_stream = match tokio_tungstenite::accept_async(raw_stream).await {
-            Ok(s) => s,
-            Err(e) => return Err((e, ticket_rx)),
-        };
+        let ws_stream = tokio_tungstenite::accept_async(raw_stream).await?;
         println!("WebSocket connection established: {}", addr);
 
         let (outgoing, incoming) = ws_stream.split();
@@ -68,10 +64,9 @@ impl WSConnection {
             outgoing,
             serial_client,
             ctrlc_rx,
-            ticket_rx,
         );
         let state = match ticket {
-            None => State::Waiting(Waiting::new(shared)),
+            None => State::Waiting(Waiting::new(ticket_rx, shared)),
             Some(_) => State::Active(Active::new(shared)),
         };
 
@@ -82,17 +77,20 @@ impl WSConnection {
     }
 
     /// Processes the WebSocket connection until disconnection.
-    pub async fn process(mut self) -> TicketNotifier {
+    pub async fn process(mut self) {
         loop {
             match self.state {
                 State::Waiting(s) => {
                     let active = match s.wait_in_queue().await {
                         Ok(a) => a,
-                        Err(t) => return t,
+                        Err(()) => break,
                     };
                     self.state = State::Active(active);
                 }
-                State::Active(s) => return s.process().await,
+                State::Active(s) => {
+                    s.process().await;
+                    break;
+                }
             }
         }
     }
@@ -108,25 +106,25 @@ enum State {
 
 /// The state of the connection when it is waiting in the queue for access to the device.
 struct Waiting {
+    /// A receiver for the notification that this connection now has access to the device.
+    ticket_rx: TicketNotifier,
     shared: SharedState,
 }
 
 impl Waiting {
-    fn new(shared: SharedState) -> Self {
+    fn new(ticket_rx: TicketNotifier, shared: SharedState) -> Self {
         Waiting {
+            ticket_rx,
             shared,
         }
     }
 
     /// Waits in the queue until this connection is being served and returns the [`Active`] state.
     ///
-    /// Returns `Err` with the connection queue ticket notifier if the connection was closed for any
-    /// reason before being served.
-    async fn wait_in_queue(mut self) -> Result<Active, TicketNotifier> {
+    /// Returns `Err` if the connection was closed for any reason before being served.
+    async fn wait_in_queue(mut self) -> Result<Active, ()> {
         // Notify the client that it must wait for the device to become available
-        if send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_BUSY).await.is_err() {
-            return Err(self.shared.ticket_rx);
-        }
+        send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_BUSY).await?;
 
         // Wait in the connection queue until this connection is ready to be served or the client
         // disconnects
@@ -148,21 +146,18 @@ impl Waiting {
             // The client disconnected before being served; close the connection and return
             _ = watch_client_dc => {
                 close(&mut self.shared.ws_outgoing).await;
-                return Err(self.shared.ticket_rx);
+                return Err(());
             },
             // This connection is being served now
-            _ = &mut self.shared.ticket_rx => {
+            _ = &mut self.ticket_rx => {
                 // Notify the client that the device is ready
-                if send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_READY).await.is_err()
-                {
-                    return Err(self.shared.ticket_rx);
-                }
+                send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_READY).await?;
             }
             // The bridge is shutting down
             _ = self.shared.ctrlc_rx.changed().fuse() => {
                 let _ = self.shared.ws_outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
                 close(&mut self.shared.ws_outgoing).await;
-                return Err(self.shared.ticket_rx);
+                return Err(());
             }
         }
 
@@ -183,7 +178,9 @@ impl Active {
         }
     }
 
-    async fn process(mut self) -> TicketNotifier {
+    /// Relays data between the WebSocket client and the serial port IO server until the connection
+    /// is closed, the bridge shuts down, or the serial device disconnects.
+    async fn process(mut self) {
         // Take control of the serial client connection
         let mut serial_client = self.shared.serial_client
             .try_lock()
@@ -204,7 +201,7 @@ impl Active {
                 .ws_outgoing
                 .send(Message::text(RESPONSE_DEVICE_NOT_CONNECTED)).await;
             close(&mut self.shared.ws_outgoing).await;
-            return self.shared.ticket_rx;
+            return;
         }
 
         // Set up message receiver for the WebSocket
@@ -260,10 +257,6 @@ impl Active {
 
         // Close the WebSocket connection
         close(&mut self.shared.ws_outgoing).await;
-
-        // The ticket receiver must not be dropped until the connection is removed from the queue, so it
-        // is returned here to the caller
-        self.shared.ticket_rx
     }
 }
 
@@ -279,8 +272,6 @@ struct SharedState {
     serial_client: Arc<TokioMutex<Client>>,
     /// A watcher for ctrl-c signals.
     ctrlc_rx: watch::Receiver<()>,
-    /// A receiver for the notification that this connection now has access to the device.
-    ticket_rx: TicketNotifier,
 }
 
 impl SharedState {
@@ -290,7 +281,6 @@ impl SharedState {
         ws_outgoing: WSOutgoingSink,
         serial_client: Arc<TokioMutex<Client>>,
         ctrlc_rx: watch::Receiver<()>,
-        ticket_rx: TicketNotifier,
     ) -> Self {
         SharedState {
             addr,
@@ -298,7 +288,6 @@ impl SharedState {
             ws_outgoing,
             serial_client,
             ctrlc_rx,
-            ticket_rx,
         }
     }
 }

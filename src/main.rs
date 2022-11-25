@@ -12,7 +12,7 @@ use tokio::sync::{watch, Mutex as TokioMutex};
 use std::{env, error, thread};
 use std::sync::{Arc, Mutex};
 
-use crate::queue::{ConnectionQueue, TicketNotifier};
+use crate::queue::ConnectionQueue;
 use crate::serial::Server;
 use crate::connection::WSConnection;
 
@@ -79,17 +79,11 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                 task_alive_token.clone(),
             ).await;
 
-            let handle_connection = async {
+            let handle_connection = async move {
                 match connection {
                     Ok(c) => c.process().await,
-                    Err((e, ticket_rx)) => {
-                        eprintln!("Error creating WebSocket connection: {}", e);
-                        ticket_rx
-                    }
+                    Err(e) => eprintln!("Error creating WebSocket connection: {}", e),
                 }
-            }.map(move |_ticket_rx: TicketNotifier| {
-                // `ticket_rx` is kept alive here so it isn't dropped before its associated
-                // connection is removed from the queue
 
                 println!("{} disconnected", addr);
 
@@ -97,7 +91,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                 // line
                 let mut queue = queue_clone.lock().unwrap();
                 queue.remove_and_serve_next(id);
-            });
+            };
 
             tokio::spawn(handle_connection);
         }

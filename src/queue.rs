@@ -8,9 +8,14 @@ use futures_channel::oneshot::{self, Receiver, Sender};
 /// served.
 pub type TicketNotifier = Receiver<()>;
 
-/// An attempt was made to serve a ticket that was already served.
+/// An error while serving a ticket.
 #[derive(Debug)]
-pub struct TicketAlreadyServedError;
+pub enum Error {
+    /// An attempt was made to serve a ticket that was already served.
+    TicketAlreadyServed,
+    /// A ticket's notifier was dropped before the ticket was served.
+    TicketAbandoned,
+}
 
 /// A ticket used to signal the next connection in line to proceed.
 struct ConnectionTicket {
@@ -37,11 +42,11 @@ impl ConnectionTicket {
 
     /// Tries to serve this ticket. Returns `Ok` if it was served successfully or `Err` if it has
     /// already been served.
-    fn try_serve(&mut self) -> Result<(), TicketAlreadyServedError> {
+    fn try_serve(&mut self) -> Result<(), Error> {
         self.sender
             .take()
-            .map(|s| s.send(()).expect("Abandoned ticket was not removed from the queue"))
-            .ok_or(TicketAlreadyServedError)
+            .ok_or(Error::TicketAlreadyServed)
+            .and_then(|s| s.send(()).map_err(|_| Error::TicketAbandoned))
     }
 
     /// Returns the ID of this `ConnectionTicket`.
@@ -92,11 +97,18 @@ impl ConnectionQueue {
     /// Panics if the next connection in the queue was already served. This is prevented by always
     /// calling [`remove`][Self::remove] after each served connection completes its work.
     pub fn serve_next(&mut self) -> bool {
-        self.queue
-            .front_mut()
-            // TODO: Automatically ignore and remove abandoned tickets here to simplify connection logic
-            .map(|c| c.try_serve().unwrap())
-            .is_some()
+        while let Some(first) = self.queue.front_mut() {
+            match first.try_serve() {
+                Ok(_) => return true,
+                // If the connection could not be served, remove it from the queue
+                Err(Error::TicketAbandoned) => {
+                    let _ = self.queue.pop_front();
+                }
+                Err(Error::TicketAlreadyServed) => panic!("Ticket was already served"),
+            }
+        }
+
+        false
     }
 
     /// Removes the connection with the specified ID. Returns whether a connection was removed.
@@ -144,6 +156,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_connection_try_serve() {
+        let (mut ticket_1, _rx_1) = ConnectionTicket::new(0);
+
+        assert!(ticket_1.try_serve().is_ok());
+        assert!(matches!(ticket_1.try_serve(), Err(Error::TicketAlreadyServed)));
+
+        let (mut ticket_2, rx_2) = ConnectionTicket::new(1);
+
+        // Abandon the ticket by dropping the notification receiver
+        drop(rx_2);
+
+        assert!(matches!(ticket_2.try_serve(), Err(Error::TicketAbandoned)));
+    }
+
+    #[test]
     fn test_queue_add_connection() {
         let mut queue = ConnectionQueue::new();
         assert!(queue.is_empty());
@@ -173,6 +200,9 @@ mod tests {
     #[test]
     fn test_queue_remove() {
         let mut queue = ConnectionQueue::new();
+
+        // Try to remove a nonexistent connection
+        assert!(!queue.remove(0));
 
         let (id_1, _) = queue.add_connection();
 
@@ -222,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "TicketAlreadyServedError")]
+    #[should_panic(expected = "already served")]
     fn test_queue_serve_next_without_removing() {
         let mut queue = ConnectionQueue::new();
 
@@ -234,7 +264,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Abandoned ticket")]
     fn test_queue_serve_next_abandoned() {
         let mut queue = ConnectionQueue::new();
 
@@ -243,8 +272,15 @@ mod tests {
         // The notification receiver is dropped, effectively abandoning the ticket
         drop(rx);
 
-        // Fails because the connection was not removed after abandoning it
-        queue.serve_next();
+        // Another connection is added but not abandoned
+        let (id_2, mut rx_2) = queue.add_connection();
+
+        // The abandoned ticket is removed automatically and the next non-abandoned ticket is served
+        assert!(queue.serve_next());
+        assert!(rx_2.try_recv().is_ok());
+
+        assert!(queue.remove(id_2));
+        assert!(queue.is_empty());
     }
 
     #[test]
