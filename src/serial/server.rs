@@ -6,6 +6,7 @@ use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use std::io::{self, Read, Write};
 use std::thread;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::{Client, Data, DeviceState};
@@ -37,7 +38,7 @@ impl Server {
     /// Returns a new `Server`, [`Client`], and an error if the serial port could not be opened.
     ///
     /// The server will continue to retry opening the serial port even if it fails initially.
-    pub fn new(path: String, ctrlc_rx: Receiver<()>) -> (Self, Client, Result<(), Error>) {
+    pub fn new(path: PathBuf, ctrlc_rx: Receiver<()>) -> (Self, Client, Result<(), Error>) {
         // Try to open the serial port
         let (port, error) = Port::new(path);
 

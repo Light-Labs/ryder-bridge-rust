@@ -3,17 +3,18 @@
 use serialport::{ClearBuffer, SerialPort};
 
 use std::io::{self, Write, Read};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// A function for opening serial ports given a path.
-pub type OpenPortFn = Box<dyn Fn(&str) -> serialport::Result<Box<dyn SerialPort>> + Send>;
+pub type OpenPortFn = Box<dyn Fn(&Path) -> serialport::Result<Box<dyn SerialPort>> + Send>;
 
 /// A wrapper around a serial port that can be reopened if the serial port is closed.
 pub struct Port {
     /// The function to use when opening the serial port.
     open: OpenPortFn,
     /// The path to the serial port.
-    path: String,
+    path: PathBuf,
     /// The internal serial port, if it is opened.
     port: Option<Box<dyn SerialPort>>,
     /// Whether a device is connected to the other end of the serial port. Always false if the
@@ -26,12 +27,12 @@ impl Port {
     ///
     /// Returns a `Port` regardless of whether the serial port was successfully opened, and
     /// additionally an `Err` if there was an error during the attempt.
-    pub fn new(path: String) -> (Self, serialport::Result<()>) {
+    pub fn new(path: PathBuf) -> (Self, serialport::Result<()>) {
         Port::new_with_open_fn(path, Box::new(open_serial_port))
     }
 
     /// Like [`new`][Self::new], but uses a custom function for opening the serial port.
-    fn new_with_open_fn(path: String, open_fn: OpenPortFn) -> (Self, serialport::Result<()>) {
+    fn new_with_open_fn(path: PathBuf, open_fn: OpenPortFn) -> (Self, serialport::Result<()>) {
         let open_fn = open_fn.into();
         let mut port = Port {
             open: open_fn,
@@ -151,7 +152,7 @@ impl Write for Port {
 }
 
 /// Attempts to open the serial port at the provided path.
-fn open_serial_port(path: &str) -> serialport::Result<Box<dyn SerialPort>> {
+fn open_serial_port(path: &Path) -> serialport::Result<Box<dyn SerialPort>> {
     // The baud rate must be set to 0 on macOS to avoid a bug
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let baud_rate = 0;
@@ -160,7 +161,7 @@ fn open_serial_port(path: &str) -> serialport::Result<Box<dyn SerialPort>> {
 
     let timeout = Duration::from_millis(10);
 
-    serialport::new(path, baud_rate)
+    serialport::new(path.to_string_lossy(), baud_rate)
         .timeout(timeout)
         .open()
         .and_then(|p| {

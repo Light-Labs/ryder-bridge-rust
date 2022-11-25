@@ -1,18 +1,23 @@
 //! See `README.md` and `lib.rs` for documentation.
 
-use std::env;
+use clap::Parser;
+
 use std::net::SocketAddr;
-use std::str::FromStr;
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(version)]
+#[command(about = "A bridge that facilitates communication between Ryder devices and applications.")]
+struct Cli {
+    #[arg(name = "serial port path")]
+    serial_port: PathBuf,
+    #[arg(name = "listening address")]
+    addr: SocketAddr,
+}
 
 #[tokio::main]
 async fn main() {
-    let mut args = env::args();
+    let cli = Cli::parse();
 
-    let ryder_port = args.nth(1).expect("Ryder port is required");
-    let addr = args.next().expect("Listening address is required");
-
-    ryder_bridge::launch(
-        SocketAddr::from_str(&addr).expect("Invalid listening address"),
-        ryder_port,
-    ).await;
+    ryder_bridge::launch(cli.addr, cli.serial_port).await;
 }

@@ -14,6 +14,7 @@ use tokio::sync::{watch, Mutex as TokioMutex};
 
 use std::thread;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::queue::ConnectionQueue;
@@ -27,10 +28,10 @@ pub struct TaskAliveToken(mpsc::Sender<()>);
 /// Launches the Ryder Bridge for the given serial port and listening address.
 pub async fn launch(
     listening_addr: SocketAddr,
-    serial_port_path: String,
+    serial_port_path: PathBuf,
 ) {
     println!("Listening on: {}", listening_addr);
-    println!("Ryder port: {}", serial_port_path);
+    println!("Ryder port: {}", serial_port_path.display());
 
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(listening_addr).await;
