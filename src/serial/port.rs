@@ -33,7 +33,6 @@ impl Port {
 
     /// Like [`new`][Self::new], but uses a custom function for opening the serial port.
     fn new_with_open_fn(path: PathBuf, open_fn: OpenPortFn) -> (Self, serialport::Result<()>) {
-        let open_fn = open_fn.into();
         let mut port = Port {
             open: open_fn,
             path,
@@ -193,224 +192,52 @@ fn get_not_connected_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use serialport::{DataBits, FlowControl, Parity, StopBits};
-
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::mock::serial::TestPort;
 
     use super::*;
 
-    const FAKE_PORT: &str = "fakeport";
-
-    // A dummy serial port implementation for testing
-    #[derive(Clone)]
-    struct TestPort {
-        // Determines whether the port is currently accessible
-        dsr: Arc<AtomicBool>,
-        // Whether the port has an error and must close
-        error: Arc<AtomicBool>,
-    }
-
-    impl TestPort {
-        fn new(dsr: Arc<AtomicBool>, error: Arc<AtomicBool>) -> serialport::Result<Self> {
-            Ok(TestPort {
-                dsr,
-                error,
-            })
-        }
-
-        // Returns an error if the `error` flag is true
-        fn access(&self) -> io::Result<()> {
-            if self.error.load(Ordering::SeqCst) {
-                Err(io::ErrorKind::BrokenPipe.into())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    impl Write for TestPort {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.access().map(|_| buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.access()
-        }
-    }
-
-    impl Read for TestPort {
-        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-            self.access().map(|_| 0)
-        }
-    }
-
-    impl SerialPort for TestPort {
-        fn name(&self) -> Option<String> {
-            None
-        }
-
-        fn baud_rate(&self) -> serialport::Result<u32> {
-            self.access().map(|_| 115_200).map_err(Into::into)
-        }
-
-        fn data_bits(&self) -> serialport::Result<DataBits> {
-            self.access().map(|_| DataBits::Eight).map_err(Into::into)
-        }
-
-        fn flow_control(&self) -> serialport::Result<FlowControl> {
-            self.access().map(|_| FlowControl::Hardware).map_err(Into::into)
-        }
-
-        fn parity(&self) -> serialport::Result<Parity> {
-            self.access().map(|_| Parity::None).map_err(Into::into)
-        }
-
-        fn timeout(&self) -> Duration {
-            Duration::from_millis(10)
-        }
-
-        fn set_baud_rate(&mut self, _baud_rate: u32) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn stop_bits(&self) -> serialport::Result<StopBits> {
-            self.access().map(|_| StopBits::One).map_err(Into::into)
-        }
-
-        fn set_data_bits(&mut self, _data_bits: DataBits) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn set_flow_control(&mut self, _flow_control: FlowControl) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn set_parity(&mut self, _parity: Parity) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn set_stop_bits(&mut self, _stop_bits: StopBits) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn set_timeout(&mut self, _timeout: Duration) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn write_request_to_send(&mut self, _level: bool) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn write_data_terminal_ready(&mut self, _level: bool) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
-            self.access().map(|_| true).map_err(Into::into)
-        }
-
-        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
-            self.access().map(|_| true).map_err(Into::into)
-        }
-
-        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
-            self.access().map(|_| true).map_err(Into::into)
-        }
-
-        fn bytes_to_read(&self) -> serialport::Result<u32> {
-            self.access().map(|_| 0).map_err(Into::into)
-        }
-
-        fn bytes_to_write(&self) -> serialport::Result<u32> {
-            self.access().map(|_| 0).map_err(Into::into)
-        }
-
-        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
-            // Read from the Arc to allow tests to set the DSR signal externally
-            self.access().map(|_| self.dsr.load(Ordering::SeqCst)).map_err(Into::into)
-        }
-
-        fn clear(&self, _buffer_to_clear: ClearBuffer) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
-            self.access().map(|_| Box::new(self.clone()) as _).map_err(Into::into)
-        }
-
-        fn set_break(&self) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-
-        fn clear_break(&self) -> serialport::Result<()> {
-            self.access().map_err(Into::into)
-        }
-    }
-
-    /// Returns a `Port` that uses a `TestPort`, any error returned while creating it, a handle to
-    /// control the DSR signal, and a handle to control the error flag.
+    /// Returns a `Port` that uses a `TestPort` internally, a handle to control the `TestPort`, and
+    /// any error returned while creating it,
     fn initialize_port(
         initial_dsr: bool,
-    ) -> (Port, serialport::Result<()>, Arc<AtomicBool>, Arc<AtomicBool>) {
-        let dsr: Arc<AtomicBool> = Arc::new(initial_dsr.into());
-        let error_flag: Arc<AtomicBool> = Arc::new(false.into());
+    ) -> (Port, TestPort, serialport::Result<()>) {
+        let test_port = TestPort::new().unwrap();
+        test_port.set_device_dsr(initial_dsr);
 
-        let dsr_clone: Arc<AtomicBool> = dsr.clone();
-        let error_flag_clone: Arc<AtomicBool> = error_flag.clone();
+        let handle = test_port.clone();
+
         let open_fn = move |_: &Path| {
-            TestPort::new(dsr_clone.clone(), error_flag_clone.clone()).map(|p| Box::new(p) as _)
+            Ok(Box::new(test_port.clone()) as _)
         };
 
         let (port, error) = Port::new_with_open_fn(
-            Path::new(FAKE_PORT).into(),
+            Path::new("./nonexistent").into(),
             Box::new(open_fn),
         );
 
-        (port, error, dsr, error_flag)
-    }
-
-    #[test]
-    fn test_test_port() {
-        let dsr = Arc::new(true.into());
-        let error = Arc::new(false.into());
-        let mut port = TestPort::new(dsr, error).unwrap();
-
-        assert!(port.write(&[]).is_ok());
-        assert!(port.flush().is_ok());
-        assert!(port.read(&mut []).is_ok());
-
-        // Accesses succeed despite the `dsr` flag being false
-        port.dsr.store(false, Ordering::SeqCst);
-
-        assert!(port.write(&[]).is_ok());
-        assert!(port.flush().is_ok());
-        assert!(port.read(&mut []).is_ok());
-
-        // Accesses fail while the `error` flag is true
-        port.error.store(true, Ordering::SeqCst);
-
-        assert!(port.write(&[]).is_err());
-        assert!(port.flush().is_err());
-        assert!(port.read(&mut []).is_err());
+        (port, handle, error)
     }
 
     #[test]
     fn test_new() {
-        let (_, error) = Port::new(Path::new(FAKE_PORT).into());
+        let open_fn = |_: &Path| Err(io::Error::from(io::ErrorKind::NotFound).into());
+        let (_, error) = Port::new_with_open_fn(
+            Path::new("./nonexistent").into(),
+            Box::new(open_fn),
+        );
         assert!(error.is_err());
 
-        // This opens a port that is inaccessible (its DSR signal is false)
-        let (_, error, _, _) = initialize_port(false);
+        // This opens a port that is inaccessible (it reads the DSR signal as false)
+        let (_, _, error) = initialize_port(false);
         assert!(error.is_err());
 
-        let (_, error, _, _) = initialize_port(true);
+        let (_, _, error) = initialize_port(true);
         assert!(error.is_ok());
     }
 
     #[test]
     fn test_is_accessible() {
-        let (mut port, _, _, _) = initialize_port(true);
+        let (mut port, _, _) = initialize_port(true);
         assert!(port.device_connected);
         assert!(port.port.is_some());
         assert!(port.is_accessible());
@@ -428,11 +255,11 @@ mod tests {
 
     #[test]
     fn test_update_port_state() {
-        let (mut port, _, dsr, error) = initialize_port(true);
+        let (mut port, handle, _) = initialize_port(true);
         assert!(port.is_accessible());
 
         // Make the device inaccessible
-        dsr.store(false, Ordering::SeqCst);
+        handle.set_device_dsr(false);
 
         // The port still thinks it's accessible because no accesses were attempted
         assert!(port.is_accessible());
@@ -443,7 +270,7 @@ mod tests {
         assert!(port.port.is_some());
 
         // Make the device accessible again
-        dsr.store(true, Ordering::SeqCst);
+        handle.set_device_dsr(true);
 
         // Update the port's state again
         assert!(!port.is_accessible());
@@ -451,7 +278,7 @@ mod tests {
         assert!(port.is_accessible());
 
         // Disconnect the device by causing an error
-        error.store(true, Ordering::SeqCst);
+        handle.set_has_error(true);
 
         // The port is now fully closed
         assert!(port.update_port_state().is_err());
@@ -461,12 +288,12 @@ mod tests {
 
     #[test]
     fn test_try_open() {
-        let (mut port, _, dsr, error) = initialize_port(true);
+        let (mut port, handle, _) = initialize_port(true);
 
         assert!(port.try_open().is_ok());
 
         // Make the device inaccessible
-        dsr.store(false, Ordering::SeqCst);
+        handle.set_device_dsr(false);
 
         // `try_open` now fails, but the port is still open
         assert!(port.try_open().is_err());
@@ -474,13 +301,13 @@ mod tests {
         assert!(port.port.is_some());
 
         // Make the device accessible again
-        dsr.store(true, Ordering::SeqCst);
+        handle.set_device_dsr(true);
 
         assert!(port.try_open().is_ok());
         assert!(port.is_accessible());
 
         // Disconnect the device by causing an error
-        error.store(true, Ordering::SeqCst);
+        handle.set_has_error(true);
 
         assert!(port.try_open().is_err());
         assert!(port.port.is_none());
@@ -490,7 +317,7 @@ mod tests {
         assert!(port.try_open().is_err());
 
         // Reconnect the device
-        error.store(false, Ordering::SeqCst);
+        handle.set_has_error(false);
 
         // Reopen the port
         assert!(port.try_open().is_ok());
@@ -500,32 +327,32 @@ mod tests {
 
     #[test]
     fn test_io() {
-        let (mut port, _, dsr, error) = initialize_port(true);
+        let (mut port, handle, _) = initialize_port(true);
 
         assert!(port.write(&[]).is_ok());
         assert!(port.read(&mut []).is_ok());
 
         // Make the device inaccessible
-        dsr.store(false, Ordering::SeqCst);
+        handle.set_device_dsr(false);
 
         assert!(port.write(&[]).is_err());
         assert!(port.read(&mut []).is_err());
 
         // Make the device accessible again
-        dsr.store(true, Ordering::SeqCst);
+        handle.set_device_dsr(true);
 
         assert!(port.write(&[]).is_ok());
         assert!(port.read(&mut []).is_ok());
 
         // Disconnect the device by causing an error
-        error.store(true, Ordering::SeqCst);
+        handle.set_has_error(true);
 
         assert!(port.write(&[]).is_err());
         assert!(port.read(&mut []).is_err());
         assert!(port.port.is_none());
 
         // Reconnect the device
-        error.store(false, Ordering::SeqCst);
+        handle.set_has_error(false);
 
         // I/O still fails because the port was not reopened
         assert!(port.write(&[]).is_err());

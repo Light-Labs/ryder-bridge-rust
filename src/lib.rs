@@ -4,6 +4,8 @@
 mod connection;
 mod serial;
 mod queue;
+#[cfg(test)]
+mod mock;
 
 use futures_channel::mpsc;
 use futures::{FutureExt, select};
