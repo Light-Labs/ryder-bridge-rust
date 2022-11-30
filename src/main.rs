@@ -19,5 +19,9 @@ struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    ryder_bridge::launch(cli.addr, cli.serial_port).await;
+    // Launch the bridge
+    let (task_handle, handle) = ryder_bridge::launch(cli.addr, cli.serial_port);
+
+    // Wait for it to close
+    task_handle.await.unwrap();
 }

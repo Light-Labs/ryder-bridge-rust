@@ -12,7 +12,8 @@ use futures::{FutureExt, select};
 use futures_util::{StreamExt, pin_mut};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::sync::{watch, Mutex as TokioMutex};
+use tokio::sync::{watch, Mutex as TokioMutex, oneshot};
+use tokio::task::JoinHandle;
 
 use std::thread;
 use std::net::SocketAddr;
@@ -27,10 +28,45 @@ use crate::connection::WSConnection;
 #[derive(Clone)]
 pub struct TaskAliveToken(mpsc::Sender<()>);
 
-/// Launches the Ryder Bridge for the given serial port and listening address.
-pub async fn launch(
+/// A handle to the bridge that can be used to terminate it.
+pub struct BridgeHandle(oneshot::Sender<()>);
+
+impl BridgeHandle {
+    /// Returns a new `BridgeHandle` and a receiver to wait for the termination signal.
+    fn new() -> (Self, oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+
+        (BridgeHandle(tx), rx)
+    }
+
+    /// Terminates the bridge.
+    pub fn terminate(self) {
+        self.0.send(()).unwrap();
+    }
+}
+
+/// Launches the Ryder Bridge for the given serial port and listening address. Returns a
+/// handle to the bridge's task that should be `await`ed, and a [`BridgeHandle`] that can be used
+/// to control the bridge.
+pub fn launch(
     listening_addr: SocketAddr,
     serial_port_path: PathBuf,
+) -> (JoinHandle<()>, BridgeHandle) {
+    // Create a handle for the bridge
+    let (bridge_handle, terminate_rx) = BridgeHandle::new();
+
+    // Launch the bridge
+    let task_handle = tokio::spawn(launch_internal(listening_addr, serial_port_path, terminate_rx));
+
+    (task_handle, bridge_handle)
+}
+
+/// Launches the Ryder Bridge for the given serial port and listening address. `handle_terminate_rx`
+/// is watched for a signal to terminate the bridge and all connections.
+pub async fn launch_internal(
+    listening_addr: SocketAddr,
+    serial_port_path: PathBuf,
+    handle_terminate_rx: oneshot::Receiver<()>,
 ) {
     println!("Listening on: {}", listening_addr);
     println!("Ryder port: {}", serial_port_path.display());
@@ -44,11 +80,12 @@ pub async fn launch(
     let (task_alive_token, mut tasks_finished_listener) = mpsc::channel(1);
     let task_alive_token = TaskAliveToken(task_alive_token);
 
-    let (ctrlc_tx, mut ctrlc_rx) = watch::channel(());
-    let ctrlc_rx_copy = ctrlc_rx.clone();
+    // Set up channel to send termination signal to connection tasks and serial server
+    let (terminate_tx, mut terminate_rx) = watch::channel(());
+    let terminate_rx_copy = terminate_rx.clone();
 
     // Create a serial I/O server
-    let (serial_server, serial_client, error) = Server::new(serial_port_path, ctrlc_rx.clone());
+    let (serial_server, serial_client, error) = Server::new(serial_port_path, terminate_rx.clone());
     let serial_client = Arc::new(TokioMutex::new(serial_client));
 
     if let Err(e) = error {
@@ -79,7 +116,7 @@ pub async fn launch(
                 stream,
                 addr,
                 serial_client.clone(),
-                ctrlc_rx_copy.clone(),
+                terminate_rx_copy.clone(),
                 ticket_rx,
                 task_alive_token.clone(),
             ).await;
@@ -102,20 +139,36 @@ pub async fn launch(
         }
     }.fuse();
 
-    // Listen for new connections until ctrl-c is received
+    // Listen for new connections until a termination signal is received
     let listen = tokio::spawn(async move {
         pin_mut!(listen);
         select! {
             _ = listen => {},
-            _ = ctrlc_rx.changed().fuse() => {},
+            _ = terminate_rx.changed().fuse() => {},
         }
     });
 
-    // Wait for ctrl-c
-    if let Err(e) = signal::ctrl_c().await {
-        eprintln!("Failed to wait for ctrl-c signal: {}", e);
+    // Wait for ctrl-c or other termination signal
+    let mut terminate_rx = handle_terminate_rx.fuse();
+    loop {
+        select! {
+            res = signal::ctrl_c().fuse() => {
+                if let Err(e) = res {
+                    eprintln!("Failed to wait for ctrl-c signal: {}", e);
+                }
+                break;
+            }
+            res = &mut terminate_rx => {
+                // Only terminate if a signal was actually sent and the bridge handle was not simply
+                // dropped
+                if let Ok(()) = res {
+                    break;
+                }
+            }
+        }
     }
-    ctrlc_tx.send(()).unwrap();
+    // Forward termination signal to all tasks and threads
+    terminate_tx.send(()).unwrap();
 
     // Wait for all existing tasks to finish
     listen.await.unwrap();
@@ -126,4 +179,38 @@ pub async fn launch(
     server_handle.join().unwrap();
 
     println!("Shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::pin_mut;
+    use futures::future::{self, Either};
+    use tokio::task::JoinError;
+    use tokio::time;
+
+    use std::path::Path;
+    use std::time::Duration;
+
+    use crate::mock;
+
+    use super::*;
+
+    /// Launches the bridge for testing.
+    fn launch_bridge_test() -> (JoinHandle<()>, BridgeHandle) {
+        launch(mock::get_bridge_test_addr(), Path::new("./nonexistent").into())
+    }
+
+    #[tokio::test]
+    async fn test_bridge_handle_terminate() {
+        let (task_handle, handle) = launch_bridge_test();
+        handle.terminate();
+
+        let timeout = time::sleep(Duration::from_millis(3000));
+
+        // Give the bridge a small amount of time to terminate
+        select! {
+            _ = task_handle.fuse() => {},
+            _ = timeout.fuse() => panic!("bridge not terminated"),
+        }
+    }
 }

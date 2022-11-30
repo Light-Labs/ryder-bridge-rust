@@ -30,15 +30,17 @@ pub struct Server {
     rx: UnboundedReceiver<Data>,
     /// A sender for data received from the serial port.
     tx: UnboundedSender<Data>,
-    /// A receiver for ctrl-c signals.
-    ctrlc_rx: Receiver<()>,
+    /// A receiver for termination signals.
+    terminate_rx: Receiver<()>,
 }
 
 impl Server {
     /// Returns a new `Server`, [`Client`], and an error if the serial port could not be opened.
     ///
     /// The server will continue to retry opening the serial port even if it fails initially.
-    pub fn new(path: PathBuf, ctrlc_rx: Receiver<()>) -> (Self, Client, Result<(), Error>) {
+    /// `terminate_rx` is watched for a signal that the bridge is shutting down, in which case the
+    /// serial port and the server are closed.
+    pub fn new(path: PathBuf, terminate_rx: Receiver<()>) -> (Self, Client, Result<(), Error>) {
         // Try to open the serial port
         let (port, error) = Port::new(path);
 
@@ -63,7 +65,7 @@ impl Server {
             data_to_write: None,
             rx: write_rx,
             tx: read_tx,
-            ctrlc_rx,
+            terminate_rx,
         };
 
         let client = Client::new(write_tx, read_rx, device_state_rx);
@@ -76,8 +78,8 @@ impl Server {
     /// A separate thread must be used for this as it runs in an infinite loop.
     pub fn run(mut self) {
         loop {
-            // Watch for exit signal
-            if self.ctrlc_rx.has_changed().unwrap_or(true) {
+            // Watch for termination signal
+            if self.terminate_rx.has_changed().unwrap_or(true) {
                 break;
             }
 
@@ -118,8 +120,7 @@ impl Server {
         // Write data to port (prioritizing data that previously failed to write)
         if self.data_to_write.is_none() {
             // The unwrap here will fail if the channel is closed, but the server should always
-            // be closed by ctrl-c before the client (which owns the tx), so it shouldn't be an
-            // issue
+            // be terminated before the client (which owns the tx), so it shouldn't be an issue
             self.data_to_write = self.rx.try_next().map(Option::unwrap).ok();
         }
 

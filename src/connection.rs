@@ -40,11 +40,16 @@ impl WSConnection {
     /// Creates a new `WSConnection` to handle an incoming WebSocket connection from `addr`.
     ///
     /// Returns `Err` if a connection could not be established.
+    ///
+    /// - `terminate_rx` is watched for a signal that the bridge is shutting down, in which case
+    /// the connection is terminated.
+    /// - `ticket_rx` is watched to determine when this connection is being served in the queue.
+    /// - `task_alive_token` is not dropped by the connection until it disconnects.
     pub async fn new(
         raw_stream: TcpStream,
         addr: SocketAddr,
         serial_client: Arc<TokioMutex<Client>>,
-        ctrlc_rx: watch::Receiver<()>,
+        terminate_rx: watch::Receiver<()>,
         mut ticket_rx: TicketNotifier,
         task_alive_token: TaskAliveToken,
     ) -> Result<Self, Error> {
@@ -63,7 +68,7 @@ impl WSConnection {
             incoming,
             outgoing,
             serial_client,
-            ctrlc_rx,
+            terminate_rx,
         );
         let state = match ticket {
             None => State::Waiting(Waiting::new(ticket_rx, shared)),
@@ -154,7 +159,7 @@ impl Waiting {
                 send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_READY).await?;
             }
             // The bridge is shutting down
-            _ = self.shared.ctrlc_rx.changed().fuse() => {
+            _ = self.shared.terminate_rx.changed().fuse() => {
                 let _ = self.shared.ws_outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
                 close(&mut self.shared.ws_outgoing).await;
                 return Err(());
@@ -232,13 +237,13 @@ impl Active {
             })
             .forward(&mut self.shared.ws_outgoing);
 
-        // Wait for a ctrl-c signal or for the client or serial IO server to end the connection
+        // Wait for a termination signal or for the client or serial IO server to end the connection
         pin_mut!(ws_receiver, ws_sender);
         loop {
             select! {
                 _ = ws_receiver => break,
                 _ = ws_sender => break,
-                _ = self.shared.ctrlc_rx.changed().fuse() => {
+                _ = self.shared.terminate_rx.changed().fuse() => {
                     let _ = self.shared
                         .ws_outgoing
                         .send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
@@ -270,8 +275,8 @@ struct SharedState {
     ws_outgoing: WSOutgoingSink,
     /// A handle to the client for the serial port I/O server.
     serial_client: Arc<TokioMutex<Client>>,
-    /// A watcher for ctrl-c signals.
-    ctrlc_rx: watch::Receiver<()>,
+    /// A watcher for termination signals.
+    terminate_rx: watch::Receiver<()>,
 }
 
 impl SharedState {
@@ -280,14 +285,14 @@ impl SharedState {
         ws_incoming: WSIncomingStream,
         ws_outgoing: WSOutgoingSink,
         serial_client: Arc<TokioMutex<Client>>,
-        ctrlc_rx: watch::Receiver<()>,
+        terminate_rx: watch::Receiver<()>,
     ) -> Self {
         SharedState {
             addr,
             ws_incoming,
             ws_outgoing,
             serial_client,
-            ctrlc_rx,
+            terminate_rx,
         }
     }
 }
