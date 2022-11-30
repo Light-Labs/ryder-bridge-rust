@@ -20,7 +20,7 @@ async fn main() {
     let cli = Cli::parse();
 
     // Launch the bridge
-    let (task_handle, handle) = ryder_bridge::launch(cli.addr, cli.serial_port);
+    let (task_handle, _) = ryder_bridge::launch(cli.addr, cli.serial_port);
 
     // Wait for it to close
     task_handle.await.unwrap();

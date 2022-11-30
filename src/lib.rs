@@ -4,12 +4,9 @@
 mod connection;
 mod serial;
 mod queue;
-#[cfg(test)]
-mod mock;
 
-use futures_channel::mpsc;
-use futures::{FutureExt, select};
-use futures_util::{StreamExt, pin_mut};
+use futures::channel::mpsc;
+use futures::{FutureExt, pin_mut, select, StreamExt};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{watch, Mutex as TokioMutex, oneshot};
@@ -183,15 +180,12 @@ pub async fn launch_internal(
 
 #[cfg(test)]
 mod tests {
-    use futures::pin_mut;
-    use futures::future::{self, Either};
-    use tokio::task::JoinError;
     use tokio::time;
 
     use std::path::Path;
     use std::time::Duration;
 
-    use crate::mock;
+    use mock;
 
     use super::*;
 

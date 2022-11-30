@@ -2,7 +2,7 @@
 
 use serialport::Error;
 use tokio::sync::watch::{self, Receiver, Sender};
-use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use std::io::{self, Read, Write};
 use std::thread;

@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use futures_channel::oneshot::{self, Receiver, Sender};
+use futures::channel::oneshot::{self, Receiver, Sender};
 
 /// A type that can be `await`ed to to be notified of when a ticket in the queue is now being
 /// served.

@@ -201,6 +201,7 @@ impl SerialPort for TestPort {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -192,7 +192,7 @@ fn get_not_connected_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::mock::serial::TestPort;
+    use mock::serial::TestPort;
 
     use super::*;
 

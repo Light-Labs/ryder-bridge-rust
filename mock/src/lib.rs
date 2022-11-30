@@ -1,7 +1,6 @@
 //! Mock types for testing.
 
 pub mod serial;
-pub mod client;
 
 use std::env;
 use std::net::SocketAddr;

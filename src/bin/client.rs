@@ -12,15 +12,14 @@
 
 use std::{env, process, error::Error};
 
-use futures::{FutureExt, SinkExt, TryStreamExt, select};
-use futures_util::{pin_mut, StreamExt};
+use futures::{FutureExt, pin_mut, SinkExt, StreamExt, TryStreamExt, select};
 use tokio::io::{AsyncReadExt};
 use tokio::signal;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::protocol::Message,
 };
-use futures_channel::mpsc;
+use futures::channel::mpsc;
 use url::Url;
 
 #[tokio::main]
@@ -76,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 // Our helper method which will read data from stdin and send it along the
 // sender provided.
-async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Vec<u8>>) {
+async fn read_stdin(tx: futures::channel::mpsc::UnboundedSender<Vec<u8>>) {
     let mut stdin = tokio::io::stdin();
     let mut input = Vec::new();
     let mut buf = vec![0; 1024];

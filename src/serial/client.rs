@@ -1,6 +1,6 @@
 //! A client for serial port communication.
 
-use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::watch::Receiver;
 
 use super::{Data, DeviceState};
