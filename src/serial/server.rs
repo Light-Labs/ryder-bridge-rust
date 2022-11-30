@@ -5,23 +5,46 @@ use tokio::sync::watch::{self, Receiver, Sender};
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use std::io::{self, Read, Write};
-use std::thread;
+use std::time::{Duration, Instant};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use super::{Client, Data, DeviceState};
 use super::port::Port;
+
+/// The delay between each attempt to open the serial port is if it closed.
+const PORT_OPEN_ATTEMPT_DELAY: Duration = Duration::from_secs(2);
+
+/// The state of a serial port.
+enum SerialPortState {
+    /// The serial is accessible (i.e., has is open and has a device connected to it).
+    Accessible,
+    /// The serial port is inaccessible, whether due to being closed or having no device connected
+    /// to it.
+    Inaccessible {
+        /// The time after which to try accessing the serial port again.
+        retry_at: Instant,
+    },
+}
+
+impl SerialPortState {
+    /// Returns the `Inaccessible` state.
+    fn inaccessible() -> Self {
+        SerialPortState::Inaccessible {
+            retry_at: Instant::now() + PORT_OPEN_ATTEMPT_DELAY,
+        }
+    }
+}
 
 /// A server that directly communicates with a serial port, forwarding data to and from a
 /// [`Client`] and handling serial device disconnections and reconnections.
 pub struct Server {
     /// The serial port itself.
     port: Port,
-    /// Whether the serial port was accessible when last accessed.
-    port_accessible: bool,
+    /// The state of the serial port.
+    port_state: SerialPortState,
     /// A sender for notifying the client of serial device state changes (i.e., reconnections and
     /// disconnections).
-    device_state: Sender<DeviceState>,
+    device_state_tx: Sender<DeviceState>,
     /// A buffer for reading data from the serial port.
     read_buf: Vec<u8>,
     /// A buffer for storing partially written data so that the write can be completed later.
@@ -57,10 +80,15 @@ impl Server {
         // Open the serial port read channel
         let (read_tx, read_rx) = mpsc::unbounded();
 
+        let port_state = match error {
+            Ok(_) => SerialPortState::Accessible,
+            Err(_) => SerialPortState::inaccessible(),
+        };
+
         let server = Server {
             port,
-            port_accessible: error.is_ok(),
-            device_state: device_state_tx,
+            port_state,
+            device_state_tx,
             read_buf: vec![0; 256],
             data_to_write: None,
             rx: write_rx,
@@ -83,17 +111,24 @@ impl Server {
                 break;
             }
 
-            if self.port_accessible {
-                // If the port is accessible, process I/O
-                if let Err(e) = self.process_io() {
-                    self.on_device_disconnected(e);
+            match self.port_state {
+                SerialPortState::Accessible => {
+                    // If the port is accessible, process I/O
+                    if let Err(e) = self.process_io() {
+                        self.on_device_disconnected(e);
+                    }
                 }
-            } else {
-                // Otherwise, keep retrying to re-open it
-                match self.port.try_open() {
-                    Ok(_) => self.on_device_connected(),
-                    // Don't retry too often
-                    Err(_) => thread::sleep(Duration::from_secs(2)),
+                SerialPortState::Inaccessible { ref mut retry_at } => {
+                    // Otherwise, keep retrying to re-open it occasionally
+                    let now = Instant::now();
+
+                    if now >= *retry_at {
+                        match self.port.try_open() {
+                            Ok(_) => self.on_device_connected(),
+                            // Don't retry too often
+                            Err(_) => *retry_at = now + PORT_OPEN_ATTEMPT_DELAY,
+                        }
+                    }
                 }
             }
         }
@@ -102,16 +137,16 @@ impl Server {
     /// Updates the port state flag and notifies the client that the serial device disconnected.
     fn on_device_disconnected(&mut self, error: Error) {
         println!("Device disconnected: {}", error);
-        self.port_accessible = false;
-        self.device_state.send(DeviceState::NotConnected).unwrap();
+        self.port_state = SerialPortState::inaccessible();
+        self.device_state_tx.send(DeviceState::NotConnected).unwrap();
     }
 
     /// Updates the port state flag and notifies the client that the serial device connected or
     /// reconnected.
     fn on_device_connected(&mut self) {
         println!("Device connected");
-        self.port_accessible = true;
-        self.device_state.send(DeviceState::Connnected).unwrap();
+        self.port_state = SerialPortState::Accessible;
+        self.device_state_tx.send(DeviceState::Connnected).unwrap();
     }
 
     /// Processes serial port and [`Client`] I/O. Returns `Err` if the serial port could not be

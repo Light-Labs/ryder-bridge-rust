@@ -199,12 +199,7 @@ mod tests {
         let (task_handle, handle) = launch_bridge_test();
         handle.terminate();
 
-        let timeout = time::sleep(Duration::from_millis(3000));
-
         // Give the bridge a small amount of time to terminate
-        select! {
-            _ = task_handle.fuse() => {},
-            _ = timeout.fuse() => panic!("bridge not terminated"),
-        }
+        assert!(time::timeout(Duration::from_millis(100), task_handle).await.is_ok());
     }
 }
