@@ -6,13 +6,16 @@ use std::io::{self, Write, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// A function for opening serial ports given a path.
-pub type OpenPortFn = Box<dyn Fn(&Path) -> serialport::Result<Box<dyn SerialPort>> + Send>;
+/// A trait for opening serial ports given a path. Implemented for all functions with the correct
+/// signature.
+pub trait OpenPort: Fn(&Path) -> serialport::Result<Box<dyn SerialPort>> + Send {}
+
+impl<F> OpenPort for F where F: Fn(&Path) -> serialport::Result<Box<dyn SerialPort>> + Send {}
 
 /// A wrapper around a serial port that can be reopened if the serial port is closed.
 pub struct Port {
     /// The function to use when opening the serial port.
-    open: OpenPortFn,
+    open: Box<dyn OpenPort>,
     /// The path to the serial port.
     path: PathBuf,
     /// The internal serial port, if it is opened.
@@ -23,18 +26,16 @@ pub struct Port {
 }
 
 impl Port {
-    /// Creates a new `Port` that accesses a serial port at `path`.
+    /// Creates a new `Port` that accesses a serial port at `path`, opened by calling `open_fn`.
     ///
     /// Returns a `Port` regardless of whether the serial port was successfully opened, and
     /// additionally an `Err` if there was an error during the attempt.
-    pub fn new(path: PathBuf) -> (Self, serialport::Result<()>) {
-        Port::new_with_open_fn(path, Box::new(open_serial_port))
-    }
-
-    /// Like [`new`][Self::new], but uses a custom function for opening the serial port.
-    fn new_with_open_fn(path: PathBuf, open_fn: OpenPortFn) -> (Self, serialport::Result<()>) {
+    pub fn with_open_fn<F: OpenPort + 'static>(
+        path: PathBuf,
+        open_fn: F,
+    ) -> (Self, serialport::Result<()>) {
         let mut port = Port {
-            open: open_fn,
+            open: Box::new(open_fn),
             path,
             port: None,
             device_connected: false,
@@ -150,8 +151,9 @@ impl Write for Port {
     }
 }
 
-/// Attempts to open the serial port at the provided path.
-fn open_serial_port(path: &Path) -> serialport::Result<Box<dyn SerialPort>> {
+/// Attempts to open the serial port at the provided path. This function is the default argument to
+/// [`Port::with_open_fn`].
+pub fn open_serial_port(path: &Path) -> serialport::Result<Box<dyn SerialPort>> {
     // The baud rate must be set to 0 on macOS to avoid a bug
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let baud_rate = 0;
@@ -210,10 +212,7 @@ mod tests {
             Ok(Box::new(test_port.clone()) as _)
         };
 
-        let (port, error) = Port::new_with_open_fn(
-            Path::new("./nonexistent").into(),
-            Box::new(open_fn),
-        );
+        let (port, error) = Port::with_open_fn(Path::new("./nonexistent").into(), open_fn);
 
         (port, handle, error)
     }
@@ -221,10 +220,7 @@ mod tests {
     #[test]
     fn test_new() {
         let open_fn = |_: &Path| Err(io::Error::from(io::ErrorKind::NotFound).into());
-        let (_, error) = Port::new_with_open_fn(
-            Path::new("./nonexistent").into(),
-            Box::new(open_fn),
-        );
+        let (_, error) = Port::with_open_fn(Path::new("./nonexistent").into(), open_fn);
         assert!(error.is_err());
 
         // This opens a port that is inaccessible (it reads the DSR signal as false)

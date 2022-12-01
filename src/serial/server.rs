@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use std::path::PathBuf;
 
 use super::{Client, Data, DeviceState};
-use super::port::Port;
+use super::port::{OpenPort, Port};
 
 /// The delay between each attempt to open the serial port is if it closed.
 const PORT_OPEN_ATTEMPT_DELAY: Duration = Duration::from_secs(2);
@@ -59,13 +59,18 @@ pub struct Server {
 
 impl Server {
     /// Returns a new `Server`, [`Client`], and an error if the serial port could not be opened.
+    /// Accesses a serial port at `path` by calling `port_open_fn`.
     ///
     /// The server will continue to retry opening the serial port even if it fails initially.
     /// `terminate_rx` is watched for a signal that the bridge is shutting down, in which case the
     /// serial port and the server are closed.
-    pub fn new(path: PathBuf, terminate_rx: Receiver<()>) -> (Self, Client, Result<(), Error>) {
+    pub fn with_port_open_fn<F: OpenPort + 'static>(
+        path: PathBuf,
+        port_open_fn: F,
+        terminate_rx: Receiver<()>,
+    ) -> (Self, Client, Result<(), Error>) {
         // Try to open the serial port
-        let (port, error) = Port::new(path);
+        let (port, error) = Port::with_open_fn(path, port_open_fn);
 
         let initial_state = if error.is_ok() {
             DeviceState::Connnected

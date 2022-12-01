@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::queue::ConnectionQueue;
-use crate::serial::Server;
+use crate::serial::{OpenPort, Server};
 use crate::connection::WSConnection;
 
 /// A token that signals that a `tokio` task is still alive as long as it has not been dropped.
@@ -49,20 +49,42 @@ pub fn launch(
     listening_addr: SocketAddr,
     serial_port_path: PathBuf,
 ) -> (JoinHandle<()>, BridgeHandle) {
+    launch_with_port_open_fn_private(listening_addr, serial_port_path, serial::open_serial_port)
+}
+
+/// Like [`launch`], but uses a custom function for opening the serial port.
+fn launch_with_port_open_fn_private<F: OpenPort + 'static>(
+    listening_addr: SocketAddr,
+    serial_port_path: PathBuf,
+    port_open_fn: F,
+) -> (JoinHandle<()>, BridgeHandle) {
     // Create a handle for the bridge
     let (bridge_handle, terminate_rx) = BridgeHandle::new();
 
     // Launch the bridge
-    let task_handle = tokio::spawn(launch_internal(listening_addr, serial_port_path, terminate_rx));
+    let task_handle = tokio::spawn(
+        launch_internal(listening_addr, serial_port_path, Box::new(port_open_fn), terminate_rx)
+    );
 
     (task_handle, bridge_handle)
 }
 
-/// Launches the Ryder Bridge for the given serial port and listening address. `handle_terminate_rx`
-/// is watched for a signal to terminate the bridge and all connections.
-pub async fn launch_internal(
+/// A version of [`launch_with_port_open_fn_private`] available only for tests.
+#[cfg(test)]
+pub fn launch_with_port_open_fn<F: OpenPort + 'static>(
     listening_addr: SocketAddr,
     serial_port_path: PathBuf,
+    port_open_fn: F,
+) -> (JoinHandle<()>, BridgeHandle) {
+    launch_with_port_open_fn_private(listening_addr, serial_port_path, port_open_fn)
+}
+
+/// Launches the Ryder Bridge for the given serial port and listening address. `handle_terminate_rx`
+/// is watched for a signal to terminate the bridge and all connections.
+async fn launch_internal(
+    listening_addr: SocketAddr,
+    serial_port_path: PathBuf,
+    port_open_fn: Box<dyn OpenPort>,
     handle_terminate_rx: oneshot::Receiver<()>,
 ) {
     println!("Listening on: {}", listening_addr);
@@ -82,7 +104,8 @@ pub async fn launch_internal(
     let terminate_rx_copy = terminate_rx.clone();
 
     // Create a serial I/O server
-    let (serial_server, serial_client, error) = Server::new(serial_port_path, terminate_rx.clone());
+    let (serial_server, serial_client, error) =
+        Server::with_port_open_fn(serial_port_path, port_open_fn, terminate_rx.clone());
     let serial_client = Arc::new(TokioMutex::new(serial_client));
 
     if let Err(e) = error {
@@ -189,7 +212,7 @@ mod tests {
 
     use super::*;
 
-    /// Launches the bridge for testing.
+    /// Launches the bridge for testing using a nonexistent serial port.
     fn launch_bridge_test() -> (JoinHandle<()>, BridgeHandle) {
         launch(mock::get_bridge_test_addr(), Path::new("./nonexistent").into())
     }
