@@ -19,9 +19,9 @@ use crate::queue::TicketNotifier;
 
 /// Returned if another client is currently controlling the device. The current client is placed in
 /// a queue.
-pub const RESPONSE_DEVICE_BUSY: &str = "RESPONSE_DEVICE_BUSY";
-/// Returned to clients after [`RESPONSE_DEVICE_BUSY`] when they move to the front of the queue.
-pub const RESPONSE_DEVICE_READY: &str = "RESPONSE_DEVICE_READY";
+pub const RESPONSE_WAIT_IN_QUEUE: &str = "RESPONSE_WAIT_IN_QUEUE";
+/// Returned to clients after [`RESPONSE_WAIT_IN_QUEUE`] when they move to the front of the queue.
+pub const RESPONSE_BEING_SERVED: &str = "RESPONSE_BEING_SERVED";
 /// Returned to the current client if the device disconnects for any reason.
 pub const RESPONSE_DEVICE_DISCONNECTED: &str = "RESPONSE_DEVICE_DISCONNECTED";
 /// Returned to clients when they are at the front of the queue if the device is not connected.
@@ -138,7 +138,7 @@ impl Waiting {
     /// Returns `Err` if the connection was closed for any reason before being served.
     async fn wait_in_queue(mut self) -> Result<Active, ()> {
         // Notify the client that it must wait for the device to become available
-        send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_BUSY).await?;
+        send_or_close(&mut self.shared.ws_outgoing, RESPONSE_WAIT_IN_QUEUE).await?;
 
         // Wait in the connection queue until this connection is ready to be served or the client
         // disconnects
@@ -165,7 +165,7 @@ impl Waiting {
             // This connection is being served now
             _ = &mut self.ticket_rx => {
                 // Notify the client that the device is ready
-                send_or_close(&mut self.shared.ws_outgoing, RESPONSE_DEVICE_READY).await?;
+                send_or_close(&mut self.shared.ws_outgoing, RESPONSE_BEING_SERVED).await?;
             }
             // The bridge is shutting down
             _ = self.shared.terminate_rx.changed().fuse() => {

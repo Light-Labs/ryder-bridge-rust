@@ -4,8 +4,8 @@ use futures::Future;
 use mock::client::WSClient;
 use mock::serial::TestPort;
 use ryder_bridge::{
-    RESPONSE_DEVICE_BUSY,
-    RESPONSE_DEVICE_READY,
+    RESPONSE_WAIT_IN_QUEUE,
+    RESPONSE_BEING_SERVED,
     RESPONSE_DEVICE_DISCONNECTED,
     RESPONSE_DEVICE_NOT_CONNECTED,
     RESPONSE_BRIDGE_SHUTDOWN,
@@ -130,7 +130,7 @@ async fn run_test_device_disconnected<F: FnOnce(&TestPort) + Send + 'static>(
         // The second client must wait in the queue
         assert_eq!(
             next_response_timeout(&mut client_2).await.unwrap(),
-            Message::text(RESPONSE_DEVICE_BUSY),
+            Message::text(RESPONSE_WAIT_IN_QUEUE),
         );
 
         // Disconnect the device and give the bridge some time to notice
@@ -152,7 +152,7 @@ async fn run_test_device_disconnected<F: FnOnce(&TestPort) + Send + 'static>(
         // first client disconnects
         assert_eq!(
             next_response_timeout(&mut client_2).await.unwrap(),
-            Message::text(RESPONSE_DEVICE_READY),
+            Message::text(RESPONSE_BEING_SERVED),
         );
 
         // A different response is sent for clients waiting in the queue when the device disconnects
@@ -189,7 +189,7 @@ async fn test_bridge_shutdown() {
         // The second client must wait in the queue
         assert_eq!(
             next_response_timeout(&mut client_2).await.unwrap(),
-            Message::text(RESPONSE_DEVICE_BUSY),
+            Message::text(RESPONSE_WAIT_IN_QUEUE),
         );
 
         // Terminate the bridge
@@ -228,7 +228,7 @@ async fn test_queue() {
         // The second client must wait in the queue
         assert_eq!(
             next_response_timeout(&mut client_2).await.unwrap(),
-            Message::text(RESPONSE_DEVICE_BUSY),
+            Message::text(RESPONSE_WAIT_IN_QUEUE),
         );
 
         // While waiting in the queue, the bridge ignores data received from the client
@@ -248,7 +248,7 @@ async fn test_queue() {
         // The bridge notifies the second client that it is now being served
         assert_eq!(
             next_response_timeout(&mut client_2).await.unwrap(),
-            Message::text(RESPONSE_DEVICE_READY),
+            Message::text(RESPONSE_BEING_SERVED),
         );
 
         // The second client can now send and receive data
