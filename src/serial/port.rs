@@ -208,9 +208,7 @@ mod tests {
 
         let handle = test_port.clone();
 
-        let open_fn = move |_: &Path| {
-            Ok(Box::new(test_port.clone()) as _)
-        };
+        let open_fn = move |_: &Path| test_port.try_clone();
 
         let (port, error) = Port::with_open_fn(Path::new("./nonexistent").into(), open_fn);
 
@@ -325,7 +323,7 @@ mod tests {
     fn test_io() {
         let (mut port, handle, _) = initialize_port(true);
 
-        assert!(port.write(&[]).is_ok());
+        assert!(port.write(&[1, 2, 3]).is_ok());
         assert!(port.read(&mut []).is_ok());
 
         // Make the device inaccessible

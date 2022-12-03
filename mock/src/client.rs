@@ -17,7 +17,7 @@ type WSIncomingStream = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 /// An outgoing WS sink for sending data.
 type WSOutgoingSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
-/// A simple client that connects to the bridge and allows sending and receiving responses.
+/// A simple client that connects to the bridge and allows sending data and receiving responses.
 pub struct WSClient {
     incoming: WSIncomingStream,
     outgoing: WSOutgoingSink,

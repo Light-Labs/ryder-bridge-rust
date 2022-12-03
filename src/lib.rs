@@ -5,14 +5,22 @@ mod connection;
 mod serial;
 mod queue;
 
+pub use connection::{
+    RESPONSE_DEVICE_BUSY,
+    RESPONSE_DEVICE_READY,
+    RESPONSE_DEVICE_DISCONNECTED,
+    RESPONSE_DEVICE_NOT_CONNECTED,
+    RESPONSE_BRIDGE_SHUTDOWN,
+};
+
 use futures::channel::mpsc;
+use futures::future::FusedFuture;
 use futures::{FutureExt, pin_mut, select, StreamExt};
 use tokio::net::TcpListener;
-use tokio::signal;
+use tokio::{signal, task};
 use tokio::sync::{watch, Mutex as TokioMutex, oneshot};
 use tokio::task::JoinHandle;
 
-use std::thread;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -38,7 +46,8 @@ impl BridgeHandle {
 
     /// Terminates the bridge.
     pub fn terminate(self) {
-        self.0.send(()).unwrap();
+        // Ignore errors, as the bridge may have already shut down and dropped its receiver
+        let _ = self.0.send(());
     }
 }
 
@@ -49,11 +58,11 @@ pub fn launch(
     listening_addr: SocketAddr,
     serial_port_path: PathBuf,
 ) -> (JoinHandle<()>, BridgeHandle) {
-    launch_with_port_open_fn_private(listening_addr, serial_port_path, serial::open_serial_port)
+    launch_with_port_open_fn(listening_addr, serial_port_path, serial::open_serial_port)
 }
 
 /// Like [`launch`], but uses a custom function for opening the serial port.
-fn launch_with_port_open_fn_private<F: OpenPort + 'static>(
+pub fn launch_with_port_open_fn<F: OpenPort + 'static>(
     listening_addr: SocketAddr,
     serial_port_path: PathBuf,
     port_open_fn: F,
@@ -67,16 +76,6 @@ fn launch_with_port_open_fn_private<F: OpenPort + 'static>(
     );
 
     (task_handle, bridge_handle)
-}
-
-/// A version of [`launch_with_port_open_fn_private`] available only for tests.
-#[cfg(test)]
-pub fn launch_with_port_open_fn<F: OpenPort + 'static>(
-    listening_addr: SocketAddr,
-    serial_port_path: PathBuf,
-    port_open_fn: F,
-) -> (JoinHandle<()>, BridgeHandle) {
-    launch_with_port_open_fn_private(listening_addr, serial_port_path, port_open_fn)
 }
 
 /// Launches the Ryder Bridge for the given serial port and listening address. `handle_terminate_rx`
@@ -112,7 +111,7 @@ async fn launch_internal(
         eprintln!("Failed to open serial port: {}", e);
     }
 
-    let server_handle = thread::spawn(|| serial_server.run());
+    let server_handle = task::spawn_blocking(|| serial_server.run());
 
     // Let's spawn the handling of each connection in a separate task.
     let listen = async move {
@@ -170,6 +169,7 @@ async fn launch_internal(
 
     // Wait for ctrl-c or other termination signal
     let mut terminate_rx = handle_terminate_rx.fuse();
+    let mut server_handle = server_handle.fuse();
     loop {
         select! {
             res = signal::ctrl_c().fuse() => {
@@ -185,8 +185,15 @@ async fn launch_internal(
                     break;
                 }
             }
+            // Watch for the serial IO thread shutting down
+            // This should be impossible, but this will handle it more gracefully in case of a bug
+            res = server_handle => {
+                eprintln!("Serial IO thread shut down unexpectedly: {:?}", res);
+                break;
+            }
         }
     }
+
     // Forward termination signal to all tasks and threads
     terminate_tx.send(()).unwrap();
 
@@ -195,8 +202,10 @@ async fn launch_internal(
     // This will return `None` when all `Sender`s (owned by the tasks) have been dropped
     tasks_finished_listener.next().await;
 
-    // Wait for the serial I/O server to exit
-    server_handle.join().unwrap();
+    // Wait for the serial I/O server to exit if it hasn't already
+    if !server_handle.is_terminated() {
+        server_handle.await.unwrap();
+    }
 
     println!("Shutting down");
 }

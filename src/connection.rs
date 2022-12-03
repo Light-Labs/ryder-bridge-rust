@@ -16,11 +16,20 @@ use crate::serial::{Client, DeviceState};
 use crate::queue::TicketNotifier;
 
 // FIXME: These are placeholders; figure out actual values
-const RESPONSE_DEVICE_BUSY: &str = "RESPONSE_DEVICE_BUSY";
-const RESPONSE_DEVICE_READY: &str = "RESPONSE_DEVICE_READY";
-const RESPONSE_DEVICE_DISCONNECTED: &str = "RESPONSE_DEVICE_DISCONNECTED";
-const RESPONSE_DEVICE_NOT_CONNECTED: &str = "RESPONSE_DEVICE_NOT_CONNECTED";
-const RESPONSE_BRIDGE_SHUTDOWN: &str = "RESPONSE_BRIDGE_SHUTDOWN";
+
+/// Returned if another client is currently controlling the device. The current client is placed in
+/// a queue.
+pub const RESPONSE_DEVICE_BUSY: &str = "RESPONSE_DEVICE_BUSY";
+/// Returned to clients after [`RESPONSE_DEVICE_BUSY`] when they move to the front of the queue.
+pub const RESPONSE_DEVICE_READY: &str = "RESPONSE_DEVICE_READY";
+/// Returned to the current client if the device disconnects for any reason.
+pub const RESPONSE_DEVICE_DISCONNECTED: &str = "RESPONSE_DEVICE_DISCONNECTED";
+/// Returned to clients when they are at the front of the queue if the device is not connected.
+/// This includes when a client first connects if the queue is empty.
+pub const RESPONSE_DEVICE_NOT_CONNECTED: &str = "RESPONSE_DEVICE_NOT_CONNECTED";
+/// Returned to connected clients if the bridge is shutting down, even if the clients are in the
+/// queue.
+pub const RESPONSE_BRIDGE_SHUTDOWN: &str = "RESPONSE_BRIDGE_SHUTDOWN";
 
 /// An incoming WS stream for receiving data.
 type WSIncomingStream = SplitStream<WebSocketStream<TcpStream>>;
@@ -229,35 +238,44 @@ impl Active {
             }
         }).fuse();
 
-        // Send responses to the WebSocket
-        let ws_sender = serial_rx
-            .map(|d| {
+        // Format responses to be sent to the WebSocket
+        // `StreamExt::forward` cannot be used here as it automatically closes the connection when
+        // the stream ends
+        let ws_sender = serial_rx.map(|d| {
                 println!("Received a response from the device: {:?}", d);
-                Ok(Message::binary(d))
-            })
-            .forward(&mut self.shared.ws_outgoing);
+                Message::binary(d)
+            });
 
         // Wait for a termination signal or for the client or serial IO server to end the connection
         pin_mut!(ws_receiver, ws_sender);
-        loop {
+        let closing_response = loop {
             select! {
-                _ = ws_receiver => break,
-                _ = ws_sender => break,
+                _ = ws_receiver => {
+                    break None
+                },
+                msg = ws_sender.next() => {
+                    if let Some(m) = msg {
+                        let _ = self.shared.ws_outgoing.send(m).await;
+                    } else {
+                        // If the serial server has closed, the bridge is likely shutting down
+                        // (or a bug has occurred, and the bridge is shutting down anyways)
+                        break Some(RESPONSE_BRIDGE_SHUTDOWN);
+                    }
+                }
                 _ = self.shared.terminate_rx.changed().fuse() => {
-                    let _ = self.shared
-                        .ws_outgoing
-                        .send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
-                    break;
+                    break Some(RESPONSE_BRIDGE_SHUTDOWN);
                 },
                 _ = device_state.changed().fuse() => {
                     if *device_state.borrow() == DeviceState::NotConnected {
-                        let _ = self.shared
-                            .ws_outgoing
-                            .send(Message::text(RESPONSE_DEVICE_DISCONNECTED)).await;
-                        break;
+                        break Some(RESPONSE_DEVICE_DISCONNECTED);
                     }
                 }
             };
+        };
+
+        // Send a reason for disconnection to the client if one is available
+        if let Some(r) = closing_response {
+            let _ = self.shared.ws_outgoing.send(Message::text(r)).await;
         }
 
         // Close the WebSocket connection

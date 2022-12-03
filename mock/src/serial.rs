@@ -64,7 +64,7 @@ impl TestPort {
 
 impl Write for TestPort {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.try_access().and_then(|_| self.buf.lock().unwrap().write(buf))
+        self.try_access().and_then(|_| self.buf().write(buf))
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -74,13 +74,13 @@ impl Write for TestPort {
 
 impl Read for TestPort {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.try_access().map(|_| {
-            // Simulate a disconnected device by reading nothing
-            if !self.device_dsr() {
-                return 0;
-            }
-
+        self.try_access().and_then(|_| {
             let mut port_buf = self.buf();
+
+            // If the buffer is empty or no device is connected, there is nothing to read
+            if port_buf.is_empty() || !self.device_dsr() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
 
             // Read bytes equal to the smaller of the lengths of the target buffer and the internal
             // buffer
@@ -94,7 +94,7 @@ impl Read for TestPort {
                 *port_buf = port_buf[bytes..].to_vec();
             }
 
-            bytes
+            Ok(bytes)
         })
     }
 }
@@ -189,7 +189,7 @@ impl SerialPort for TestPort {
     }
 
     fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
-        Ok(Box::new(self.clone()))
+        self.try_access().map(|_| Box::new(self.clone()) as _).map_err(Into::into)
     }
 
     fn set_break(&self) -> serialport::Result<()> {
@@ -227,6 +227,9 @@ mod tests {
     #[test]
     fn test_port_read() {
         let mut port = TestPort::new().unwrap();
+
+        // If there is nothing to read, a timeout error is returned
+        assert!(port.read(&mut [0; 3]).is_err());
 
         port.write(&[1, 2, 3]).unwrap();
 
@@ -271,8 +274,10 @@ mod tests {
         assert_eq!(&[1, 2, 3][..], &*port.buf());
 
         let mut buf = [0; 3];
-        assert_eq!(0, port.read(&mut buf).unwrap());
-        assert_eq!([0; 3], buf);
+        assert_eq!(
+            io::ErrorKind::TimedOut,
+            port.read(&mut buf).unwrap_err().kind(),
+        );
     }
 
     #[test]
