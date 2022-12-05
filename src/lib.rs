@@ -106,6 +106,7 @@ async fn launch_internal(
     let (serial_server, serial_client, error) =
         Server::with_port_open_fn(serial_port_path, port_open_fn, terminate_rx.clone());
     let serial_client = Arc::new(TokioMutex::new(serial_client));
+    let serial_client_clone = serial_client.clone();
 
     if let Err(e) = error {
         eprintln!("Failed to open serial port: {}", e);
@@ -134,7 +135,7 @@ async fn launch_internal(
             let connection = WSConnection::new(
                 stream,
                 addr,
-                serial_client.clone(),
+                serial_client_clone.clone(),
                 terminate_rx_copy.clone(),
                 ticket_rx,
                 task_alive_token.clone(),
@@ -206,6 +207,10 @@ async fn launch_internal(
     if !server_handle.is_terminated() {
         server_handle.await.unwrap();
     }
+
+    // Ensure that the serial `Client` is dropped only after the serial `Server` exits to avoid
+    // closed channel issues
+    let _ = serial_client;
 
     println!("Shutting down");
 }

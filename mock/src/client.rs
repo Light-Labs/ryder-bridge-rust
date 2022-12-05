@@ -19,10 +19,8 @@ type WSOutgoingSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Mess
 
 /// A simple client that connects to the bridge and allows sending data and receiving responses.
 pub struct WSClient {
-    incoming: WSIncomingStream,
-    outgoing: WSOutgoingSink,
-    /// Whether the connection has been closed.
-    terminated: bool,
+    // `Some` if the connection is open, or `None` otherwise
+    connection: Option<(WSOutgoingSink, WSIncomingStream)>,
 }
 
 impl WSClient {
@@ -39,15 +37,13 @@ impl WSClient {
         let (outgoing, incoming) = stream.split();
 
         Ok(WSClient {
-            incoming,
-            outgoing,
-            terminated: false,
+            connection: Some((outgoing, incoming)),
         })
     }
 
     /// Sends `message` to the bridge.
     pub async fn send(&mut self, message: Message) -> Result<(), Error> {
-        self.outgoing.send(message).await
+        self.connection.as_mut().unwrap().0.send(message).await
     }
 
     /// Waits for the next response from the bridge and returns `Some(Ok)` if one was received,
@@ -55,8 +51,8 @@ impl WSClient {
     /// will be received.
     pub async fn next_response(&mut self) -> Option<Result<Message, Error>> {
         // Only call `next` if `None` has not been returned and the connection is still open
-        if !self.terminated {
-            let res = self.incoming.next().await;
+        if let Some((_, ref mut incoming)) = self.connection {
+            let res = incoming.next().await;
 
             if res.is_none() {
                 let _ = self.close();
@@ -71,9 +67,9 @@ impl WSClient {
     /// Closes the client's WebSocket connection.
     pub async fn close(&mut self) -> Result<(), Error> {
         // Only close the connection if it is open
-        if !self.terminated {
-            self.terminated = true;
-            self.outgoing.close().await
+        // `take` is used so the connection is dropped to fully close it
+        if let Some((mut outgoing, _)) = self.connection.take() {
+            outgoing.close().await
         } else {
             Ok(())
         }

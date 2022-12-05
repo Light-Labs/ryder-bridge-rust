@@ -5,6 +5,7 @@ use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBit
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Duration;
 
 /// A simple serial port implementation that echoes any data written to it. This type is a handle
@@ -81,6 +82,9 @@ impl Read for TestPort {
             if port_buf.is_empty() || !self.device_dsr() {
                 return Err(io::ErrorKind::TimedOut.into());
             }
+
+            // Wait before returning data to simulate delayed responses
+            thread::sleep(Duration::from_millis(50));
 
             // Read bytes equal to the smaller of the lengths of the target buffer and the internal
             // buffer

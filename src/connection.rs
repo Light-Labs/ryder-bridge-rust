@@ -209,6 +209,9 @@ impl Active {
         let serial_tx = tx;
         let serial_rx = rx;
 
+        // Clear data intended for previous clients
+        while let Ok(Some(_)) = serial_rx.try_next() {}
+
         // If the serial device is not connected, notify the client and return
         if *device_state.borrow() == DeviceState::NotConnected {
             let _ = self.shared

@@ -259,3 +259,25 @@ async fn test_queue() {
         );
     }).await;
 }
+
+#[tokio::test]
+async fn test_discard_data_if_no_clients() {
+    run_test(|bridge_port, _, _| async move {
+        let mut client_1 = WSClient::new(bridge_port).await.unwrap();
+
+        // A client sends data but disconnects before receiving a response
+        client_1.send(Message::binary([1, 2, 3])).await.unwrap();
+        client_1.close().await.unwrap();
+
+        // Give the bridge time to receive the response to the previous message
+        // Otherwise, the bridge will receive the message while the second client is already
+        // connected, and it will send it to that client without discarding it. This is not possible
+        // to prevent in general, as the serial device may have arbitrary delays in its responses.
+        time::sleep(Duration::from_millis(250)).await;
+
+        // A second client connects, but it should not receive the response that could not be sent
+        // to the first client
+        let mut client_2 = WSClient::new(bridge_port).await.unwrap();
+        assert!(next_response_timeout(&mut client_2).await.is_err());
+    }).await;
+}
