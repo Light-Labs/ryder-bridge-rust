@@ -78,6 +78,12 @@ async fn test_echo() {
     run_test(|bridge_port, _, _| async move {
         let mut client = WSClient::new(bridge_port).await.unwrap();
 
+        // There is no queue
+        assert_eq!(
+            next_response_timeout(&mut client).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
+
         // No response is available yet
         assert!(next_response_timeout(&mut client).await.is_err());
 
@@ -106,7 +112,13 @@ async fn test_device_not_connected() {
 
         let mut client = WSClient::new(bridge_port).await.unwrap();
 
-        // The bridge notifies the client and disconnects it
+        // There is no queue
+        assert_eq!(
+            next_response_timeout(&mut client).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
+
+        // The bridge notifies the client about the device state and disconnects it
         assert_eq!(
             next_response_timeout(&mut client).await.unwrap(),
             Message::text(RESPONSE_DEVICE_NOT_CONNECTED),
@@ -126,6 +138,12 @@ async fn run_test_device_disconnected<F: FnOnce(&TestPort) + Send + 'static>(
     run_test(|bridge_port, test_port, _| async move {
         let mut client_1 = WSClient::new(bridge_port).await.unwrap();
         let mut client_2 = WSClient::new(bridge_port).await.unwrap();
+
+        // The first client is the first in the queue
+        assert_eq!(
+            next_response_timeout(&mut client_1).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
 
         // The second client must wait in the queue
         assert_eq!(
@@ -148,8 +166,8 @@ async fn run_test_device_disconnected<F: FnOnce(&TestPort) + Send + 'static>(
             Message::Close(None),
         );
 
-        // The second client is in the queue, so it first receives `RESPONSE_DEVICE_READY` when the
-        // first client disconnects
+        // The second client is in the queue, so it first receives `RESPONSE_DEVICE_BEING_SERVED`
+        // when the first client disconnects
         assert_eq!(
             next_response_timeout(&mut client_2).await.unwrap(),
             Message::text(RESPONSE_BEING_SERVED),
@@ -185,6 +203,12 @@ async fn test_bridge_shutdown() {
     run_test(|bridge_port, _, terminate_bridge| async move {
         let mut client_1 = WSClient::new(bridge_port).await.unwrap();
         let mut client_2 = WSClient::new(bridge_port).await.unwrap();
+
+        // The first client is the first in the queue
+        assert_eq!(
+            next_response_timeout(&mut client_1).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
 
         // The second client must wait in the queue
         assert_eq!(
@@ -224,6 +248,12 @@ async fn test_queue() {
     run_test(|bridge_port, _, _| async move {
         let mut client_1 = WSClient::new(bridge_port).await.unwrap();
         let mut client_2 = WSClient::new(bridge_port).await.unwrap();
+
+        // The first client is the first in the queue
+        assert_eq!(
+            next_response_timeout(&mut client_1).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
 
         // The second client must wait in the queue
         assert_eq!(
@@ -265,6 +295,12 @@ async fn test_discard_data_if_no_clients() {
     run_test(|bridge_port, _, _| async move {
         let mut client_1 = WSClient::new(bridge_port).await.unwrap();
 
+        // There is no queue
+        assert_eq!(
+            next_response_timeout(&mut client_1).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
+
         // A client sends data but disconnects before receiving a response
         client_1.send(Message::binary([1, 2, 3])).await.unwrap();
         client_1.close().await.unwrap();
@@ -278,6 +314,13 @@ async fn test_discard_data_if_no_clients() {
         // A second client connects, but it should not receive the response that could not be sent
         // to the first client
         let mut client_2 = WSClient::new(bridge_port).await.unwrap();
+
+        // There is no queue because the first client has already disconnected
+        assert_eq!(
+            next_response_timeout(&mut client_2).await.unwrap(),
+            Message::text(RESPONSE_BEING_SERVED),
+        );
+
         assert!(next_response_timeout(&mut client_2).await.is_err());
     }).await;
 }
