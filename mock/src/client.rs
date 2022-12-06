@@ -26,7 +26,7 @@ pub struct WSClient {
 impl WSClient {
     /// Returns a new `WSClient` that connects to `ws://localhost:port`.
     pub async fn new(port: u16) -> Result<Self, Error> {
-        let url = Url::parse(&format!("ws://localhost:{}", port)).unwrap();
+        let url = Url::parse(&format!("ws://127.0.0.1:{}", port)).unwrap();
         let (stream, _) = select! {
             s = tokio_tungstenite::connect_async(url).fuse() => s?,
             _ = time::sleep(Duration::from_millis(1000)).fuse() => {
