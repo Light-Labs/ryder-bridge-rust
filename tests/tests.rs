@@ -34,7 +34,7 @@ where
     // Launch the bridge
     let addr = mock::get_bridge_test_addr();
     let (bridge_task_handle, bridge_handle) = ryder_bridge::launch_with_port_open_fn(
-        addr,
+        addr.to_string(),
         Path::new("./nonexistent").into(),
         move |_: &Path| test_port.try_clone(),
     );
@@ -59,7 +59,7 @@ where
     }
 
     // Wait for the bridge to close
-    bridge_task_handle.await.unwrap();
+    bridge_task_handle.await.unwrap().unwrap();
 
     // Verify that the test succeeded
     assert!(result.is_ok());
