@@ -43,3 +43,27 @@ cargo test --all -- --test-threads 1
 ```
 
 or simply `make test`. The tests will launch the bridge with a default listening port of 8080, but this can be changed by setting the `RYDER_BRIDGE_TEST_PORT` environment variable.
+
+## Bridge responses for clients
+
+The bridge may return several responses in addition to those received from the Ryder device itself. All of these extra responses are text messages, whereas device responses are binary messages.
+
+Multiple clients may connect to the bridge at one time, and they will be placed in a queue and served in the order they connected in.
+
+When a client connects, it will receive one of two responses:
+
+- `RESPONSE_WAIT_IN_QUEUE` if another client currently has access to the device and this client must wait in the queue.
+- `RESPONSE_BEING_SERVED` otherwise.
+
+If the client is placed in the queue, it will eventually receive one of two responses:
+
+- `RESPONSE_BEING_SERVED` if the client has moved to the front of the queue and is now being served.
+- `RESPONSE_BRIDGE_SHUTDOWN` if the bridge itself is shutting down. The client will be disconnected.
+
+Once `RESPONSE_BEING_SERVED` has been returned, all future responses will be one of the following:
+
+- `RESPONSE_BRIDGE_SHUTDOWN` if the bridge itself is shutting down. The client will be disconnected.
+- `RESPONSE_DEVICE_NOT_CONNECTED` if the device is not currently connected. This is only returned immediately after `RESPONSE_BEING_SERVED`. The client will be disconnected.
+- `RESPONSE_DEVICE_DISCONNECTED` if the device has disconnected. This is returned only in cases where `RESPONSE_DEVICE_NOT_CONNECTED` is not. The client will be disconnected.
+
+All other responses are binary messages from the device.
