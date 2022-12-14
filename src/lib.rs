@@ -89,11 +89,11 @@ async fn launch_internal(
     port_open_fn: Box<dyn OpenPort>,
     handle_terminate_rx: oneshot::Receiver<()>,
 ) -> BridgeResult {
-    println!("Listening on: {}", listening_addr);
-    println!("Ryder port: {}", serial_port_path.display());
-
     // Create the event loop and TCP listener we'll accept connections on.
     let listener = TcpListener::bind(listening_addr).await?;
+
+    println!("Ryder port: {}", serial_port_path.display());
+    println!("Listening on: {}", listener.local_addr()?);
 
     let queue = Arc::new(Mutex::new(ConnectionQueue::new()));
     // Set up channel to wait for all tasks to finish
