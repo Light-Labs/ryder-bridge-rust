@@ -1,24 +1,13 @@
 [package]
-name = "ryder-bridge"
+name = "mock"
 version = "0.1.0"
 edition = "2021"
-default-run = "ryder-bridge"
-
-[workspace]
-members = [
-    "mock",
-]
 
 [dependencies]
 futures = "0.3.21"
 tokio = { version = "1.18.0",  features = ["full"] }
-tungstenite = "*"
 tokio-tungstenite = "0.17.1"
 url = "2.2.2"
-clap = { version = "4.0.27", features = ["derive"] }
-
-[dev-dependencies]
-mock = { path = "./mock" }
 
 [dependencies.serialport]
 # Temporary until serialport 4.2.1 is released
