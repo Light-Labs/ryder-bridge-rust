@@ -20,7 +20,8 @@ use crate::queue::TicketNotifier;
 /// Returned if another client is currently controlling the device. The current client is placed in
 /// a queue.
 pub const RESPONSE_WAIT_IN_QUEUE: &str = "RESPONSE_WAIT_IN_QUEUE";
-/// Returned to clients after [`RESPONSE_WAIT_IN_QUEUE`] when they move to the front of the queue.
+/// Returned to clients when they are at the front of the queue. This includes when a client first
+/// connects if the queue is empty.
 pub const RESPONSE_BEING_SERVED: &str = "RESPONSE_BEING_SERVED";
 /// Returned to the current client if the device disconnects for any reason.
 pub const RESPONSE_DEVICE_DISCONNECTED: &str = "RESPONSE_DEVICE_DISCONNECTED";
@@ -102,7 +103,9 @@ impl WSConnection {
                     self.state = State::Active(active);
                 }
                 State::Active(s) => {
-                    s.process().await;
+                    // Discard any errors here because they were already printed and the connection
+                    // is shutting down anyways
+                    let _ = s.process().await;
                     break;
                 }
             }
@@ -162,17 +165,14 @@ impl Waiting {
                 close(&mut self.shared.ws_outgoing).await;
                 return Err(());
             },
-            // This connection is being served now
-            _ = &mut self.ticket_rx => {
-                // Notify the client that the device is ready
-                send_or_close(&mut self.shared.ws_outgoing, RESPONSE_BEING_SERVED).await?;
-            }
             // The bridge is shutting down
             _ = self.shared.terminate_rx.changed().fuse() => {
                 let _ = self.shared.ws_outgoing.send(Message::text(RESPONSE_BRIDGE_SHUTDOWN)).await;
                 close(&mut self.shared.ws_outgoing).await;
                 return Err(());
             }
+            // This connection is being served now
+            _ = &mut self.ticket_rx => {}
         }
 
         // The connection is now being served, so return the next state
@@ -194,7 +194,10 @@ impl Active {
 
     /// Relays data between the WebSocket client and the serial port IO server until the connection
     /// is closed, the bridge shuts down, or the serial device disconnects.
-    async fn process(mut self) {
+    async fn process(mut self) -> Result<(), ()> {
+        // Notify the client that it has access to the device
+        send_or_close(&mut self.shared.ws_outgoing, RESPONSE_BEING_SERVED).await?;
+
         // Take control of the serial client connection
         let mut serial_client = self.shared.serial_client
             .try_lock()
@@ -209,13 +212,16 @@ impl Active {
         let serial_tx = tx;
         let serial_rx = rx;
 
+        // Clear data intended for previous clients
+        while let Ok(Some(_)) = serial_rx.try_next() {}
+
         // If the serial device is not connected, notify the client and return
         if *device_state.borrow() == DeviceState::NotConnected {
             let _ = self.shared
                 .ws_outgoing
                 .send(Message::text(RESPONSE_DEVICE_NOT_CONNECTED)).await;
             close(&mut self.shared.ws_outgoing).await;
-            return;
+            return Ok(());
         }
 
         // Set up message receiver for the WebSocket
@@ -280,6 +286,8 @@ impl Active {
 
         // Close the WebSocket connection
         close(&mut self.shared.ws_outgoing).await;
+
+        Ok(())
     }
 }
 

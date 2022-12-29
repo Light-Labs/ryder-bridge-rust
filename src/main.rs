@@ -2,7 +2,6 @@
 
 use clap::Parser;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -12,7 +11,7 @@ struct Cli {
     #[arg(name = "serial port path")]
     serial_port: PathBuf,
     #[arg(name = "listening address")]
-    addr: SocketAddr,
+    addr: String,
 }
 
 #[tokio::main]
@@ -23,5 +22,7 @@ async fn main() {
     let (task_handle, _) = ryder_bridge::launch(cli.addr, cli.serial_port);
 
     // Wait for it to close
-    task_handle.await.unwrap();
+    if let Err(e) = task_handle.await.unwrap() {
+        eprintln!("Error: {}", e);
+    }
 }

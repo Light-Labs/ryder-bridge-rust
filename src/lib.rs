@@ -21,13 +21,16 @@ use tokio::{signal, task};
 use tokio::sync::{watch, Mutex as TokioMutex, oneshot};
 use tokio::task::JoinHandle;
 
-use std::net::SocketAddr;
+use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::queue::ConnectionQueue;
 use crate::serial::{OpenPort, Server};
 use crate::connection::WSConnection;
+
+/// The result type returned by the bridge.
+pub type BridgeResult = Result<(), io::Error>;
 
 /// A token that signals that a `tokio` task is still alive as long as it has not been dropped.
 #[derive(Clone)]
@@ -55,18 +58,18 @@ impl BridgeHandle {
 /// handle to the bridge's task that should be `await`ed, and a [`BridgeHandle`] that can be used
 /// to control the bridge.
 pub fn launch(
-    listening_addr: SocketAddr,
+    listening_addr: String,
     serial_port_path: PathBuf,
-) -> (JoinHandle<()>, BridgeHandle) {
+) -> (JoinHandle<BridgeResult>, BridgeHandle) {
     launch_with_port_open_fn(listening_addr, serial_port_path, serial::open_serial_port)
 }
 
 /// Like [`launch`], but uses a custom function for opening the serial port.
 pub fn launch_with_port_open_fn<F: OpenPort + 'static>(
-    listening_addr: SocketAddr,
+    listening_addr: String,
     serial_port_path: PathBuf,
     port_open_fn: F,
-) -> (JoinHandle<()>, BridgeHandle) {
+) -> (JoinHandle<BridgeResult>, BridgeHandle) {
     // Create a handle for the bridge
     let (bridge_handle, terminate_rx) = BridgeHandle::new();
 
@@ -81,17 +84,16 @@ pub fn launch_with_port_open_fn<F: OpenPort + 'static>(
 /// Launches the Ryder Bridge for the given serial port and listening address. `handle_terminate_rx`
 /// is watched for a signal to terminate the bridge and all connections.
 async fn launch_internal(
-    listening_addr: SocketAddr,
+    listening_addr: String,
     serial_port_path: PathBuf,
     port_open_fn: Box<dyn OpenPort>,
     handle_terminate_rx: oneshot::Receiver<()>,
-) {
-    println!("Listening on: {}", listening_addr);
-    println!("Ryder port: {}", serial_port_path.display());
-
+) -> BridgeResult {
     // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind(listening_addr).await;
-    let listener = try_socket.expect("Failed to bind");
+    let listener = TcpListener::bind(listening_addr).await?;
+
+    println!("Ryder port: {}", serial_port_path.display());
+    println!("Listening on: {}", listener.local_addr()?);
 
     let queue = Arc::new(Mutex::new(ConnectionQueue::new()));
     // Set up channel to wait for all tasks to finish
@@ -106,6 +108,7 @@ async fn launch_internal(
     let (serial_server, serial_client, error) =
         Server::with_port_open_fn(serial_port_path, port_open_fn, terminate_rx.clone());
     let serial_client = Arc::new(TokioMutex::new(serial_client));
+    let serial_client_clone = serial_client.clone();
 
     if let Err(e) = error {
         eprintln!("Failed to open serial port: {}", e);
@@ -134,7 +137,7 @@ async fn launch_internal(
             let connection = WSConnection::new(
                 stream,
                 addr,
-                serial_client.clone(),
+                serial_client_clone.clone(),
                 terminate_rx_copy.clone(),
                 ticket_rx,
                 task_alive_token.clone(),
@@ -207,7 +210,13 @@ async fn launch_internal(
         server_handle.await.unwrap();
     }
 
+    // Ensure that the serial `Client` is dropped only after the serial `Server` exits to avoid
+    // closed channel issues
+    let _ = serial_client;
+
     println!("Shutting down");
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -222,8 +231,8 @@ mod tests {
     use super::*;
 
     /// Launches the bridge for testing using a nonexistent serial port.
-    fn launch_bridge_test() -> (JoinHandle<()>, BridgeHandle) {
-        launch(mock::get_bridge_test_addr(), Path::new("./nonexistent").into())
+    fn launch_bridge_test() -> (JoinHandle<BridgeResult>, BridgeHandle) {
+        launch(mock::get_bridge_test_addr().to_string(), Path::new("./nonexistent").into())
     }
 
     #[tokio::test]
